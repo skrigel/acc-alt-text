@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from core.llm_client import generate_alt_text
-from models.schemas import GenerateRequest, GenerateResponse
+from app.models.schemas import GenerateRequest, GenerateResponse
 
 router = APIRouter()
 

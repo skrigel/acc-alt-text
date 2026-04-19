@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from routes.generate import router as generate_router
+from app.routes.generate import router as generate_router
 
 
 app = FastAPI(title="AltText Generator")
