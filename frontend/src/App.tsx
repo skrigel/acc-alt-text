@@ -1,34 +1,19 @@
 import { useState } from 'react'
 import './App.css'
+import { ResultsModal, type SvgResult } from './ResultsModal'
 
-interface ExtractedContext {
-  title?: string
-  sectionHeading?: string
-  nearbyText?: string
-  figureCaption?: string
-}
-
-interface GeneratedDescription {
-  short: string
-  long?: string
-}
-
-interface VisualizationResult {
-  svgContent: string
-  context: ExtractedContext
-  description: GeneratedDescription
-}
 
 function App() {
   const [url, setUrl] = useState('')
   const [descriptionType, setDescriptionType] = useState<'short' | 'both'>('short')
   const [isProcessing, setIsProcessing] = useState(false)
-  const [results, setResults] = useState<VisualizationResult[]>([])
+  const [results, setResults] = useState<SvgResult[]>([])
   const [error, setError] = useState<string | null>(null)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsProcessing(true)
+    setResults([])
     setError(null)
 
     try {
@@ -38,8 +23,7 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          url,
-          description_type: descriptionType
+          url: url,
         })
       })
 
@@ -48,7 +32,7 @@ function App() {
       }
 
       const data = await response.json()
-      setResults(data.visualizations || [])
+      setResults(data.visualizations ?? data)      // setResults(data.visualizations || [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
@@ -56,9 +40,9 @@ function App() {
     }
   }
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text)
-  }
+  // const copyToClipboard = (text: string) => {
+  //   navigator.clipboard.writeText(text)
+  // }
 
   return (
     <div className="container">
@@ -149,96 +133,10 @@ function App() {
           </div>
         )}
 
-        {results.length > 0 && (
-          <div className="results-section">
-            <div className="results-header">
-              <h2>Generated Descriptions</h2>
-              <span className="results-count">{results.length} visualization{results.length !== 1 ? 's' : ''} found</span>
-            </div>
-
-            {results.map((result, index) => (
-              <article key={index} className="result-card">
-                <div className="result-grid">
-                  <div className="result-visual">
-                    <h3 className="section-title">Extracted Visualization</h3>
-                    <div
-                      className="svg-preview"
-                      dangerouslySetInnerHTML={{ __html: result.svgContent }}
-                    />
-                  </div>
-
-                  <div className="result-context">
-                    <h3 className="section-title">Page Context</h3>
-                    <dl className="context-list">
-                      {result.context.title && (
-                        <>
-                          <dt>Page Title</dt>
-                          <dd>{result.context.title}</dd>
-                        </>
-                      )}
-                      {result.context.sectionHeading && (
-                        <>
-                          <dt>Section Heading</dt>
-                          <dd>{result.context.sectionHeading}</dd>
-                        </>
-                      )}
-                      {result.context.figureCaption && (
-                        <>
-                          <dt>Figure Caption</dt>
-                          <dd>{result.context.figureCaption}</dd>
-                        </>
-                      )}
-                      {result.context.nearbyText && (
-                        <>
-                          <dt>Nearby Text</dt>
-                          <dd className="nearby-text">{result.context.nearbyText}</dd>
-                        </>
-                      )}
-                    </dl>
-                  </div>
-                </div>
-
-                <div className="result-descriptions">
-                  <div className="description-block">
-                    <div className="description-header">
-                      <h4>Short Description</h4>
-                      <button
-                        onClick={() => copyToClipboard(result.description.short)}
-                        className="copy-btn"
-                        title="Copy to clipboard"
-                      >
-                        Copy
-                      </button>
-                    </div>
-                    <div className="description-content short">
-                      <code>{result.description.short}</code>
-                    </div>
-                    <p className="description-meta">For alt attribute</p>
-                  </div>
-
-                  {result.description.long && (
-                    <div className="description-block">
-                      <div className="description-header">
-                        <h4>Long Description</h4>
-                        <button
-                          onClick={() => copyToClipboard(result.description.long!)}
-                          className="copy-btn"
-                          title="Copy to clipboard"
-                        >
-                          Copy
-                        </button>
-                      </div>
-                      <div className="description-content long">
-                        <p>{result.description.long}</p>
-                      </div>
-                      <p className="description-meta">For aria-describedby or figcaption</p>
-                    </div>
-                  )}
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
+        {results.length > 0 && (<ResultsModal
+  results={results}
+/>) }
+        
 
         {!isProcessing && results.length === 0 && !error && (
           <div className="empty-state">
