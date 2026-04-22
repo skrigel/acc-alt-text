@@ -9,7 +9,9 @@ app = FastAPI(title="AltText Generator")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["http://localhost:5173",  # local dev
+        "http://localhost:8000",
+        "https://skrigel-acc-alt-text.hf.space"],  
     allow_methods=["*"],
     allow_headers=["*"],
 )
