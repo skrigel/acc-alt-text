@@ -1,40 +1,66 @@
 import asyncio
 import anthropic
+from dotenv import load_dotenv
+from app.models.schemas import SvgData
+import re
+import os
 
-client = anthropic.Anthropic()
+load_dotenv()
 
-async def generate_alt_text(svgs: list[str],context: dict):
-    results = []
-    for i in range(len(svgs)):
-        results.append(generate_single(i, svgs[i], context))
-    return results
+client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_KEY"))
 
-async def generate_single(i: int, svg: str, context: dict) -> dict:
+async def generate_alt_text(svgs: list[SvgData], context: dict) -> list[dict]:
+    tasks = [generate_single(i, svg) for i, svg in enumerate(svgs) if i < 2]
+    return await asyncio.gather(*tasks)
+
+async def generate_single(i: int, svg: SvgData) -> dict:
     """
-    Generates alt text for a SINGLE svg-based visualization, given as input an svg
-    and a context dict extracted from an HTML page 
+    Generates alt text for a single SVG visualization using its
+    embedded context (ariaLabel, parentContext, etc.)
     """
- 
-    message = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": build_prompt(svg, context)}]
-        )
-    result= { "svg_index": i, "short_description": "", "long_description": ""}
-    return result
+    message = await client.messages.create(
+        model="claude-opus-4-6",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": build_prompt(svg)}]
+    )
+    raw = next(block for block in message.content if block.type == "text").text
+    return {
+        "svg_index": i,
+        "short_description": parse_section(raw, "SHORT"),
+        "long_description": parse_section(raw, "LONG"),
+    }
 
-def build_prompt(svg: str, context: dict) -> str:
-    return f"""You are an accessibility expert. Generate WCAG-compliant alt-text for this SVG chart.
+def build_prompt(svg: SvgData) -> str:
+    # Use the structured context fields from SvgData directly
+    context_lines = []
+    if svg.parentContext:
+        context_lines.append(svg.parentContext)   # already formatted by extract_svgs
+    if svg.ariaLabel:
+        context_lines.append(f"Aria label: {svg.ariaLabel}")
+    if svg.ariaDescribedBy:
+        context_lines.append(f"Aria described-by text: {svg.ariaDescribedBy}")
+
+    context_block = "\n".join(context_lines) if context_lines else "No context available."
+
+    svg_trimmed = re.sub(r'<defs>.*?</defs>', '', svg.html, flags=re.DOTALL)
+    svg_trimmed = re.sub(r'<!--.*?-->', '', svg_trimmed, flags=re.DOTALL)
+    svg_trimmed = svg_trimmed[:4000]
+
+    return f"""You are an accessibility expert. Generate WCAG-compliant alt text for this SVG.
 
 Page context:
-- Title: {context.get('title', '')}
-- Headings: {', '.join(context.get('headings', []))}
-- Captions: {', '.join(context.get('captions', []))}
+{context_block}
 
 SVG:
-{svg[:3000]}  # TODO: find method that is not truncating
+{svg_trimmed}
 
-Return two parts:
-1. SHORT: A one-sentence description (for the alt attribute)
-2. LONG: A detailed description including axes, trends, and key findings (for aria-describedby)
+Respond in exactly this format:
+SHORT: <one sentence for the alt attribute>
+LONG: <detailed description covering axes, trends, and key data points for aria-describedby>
 """
+
+def parse_section(text: str, section: str) -> str:
+    """Extracts the SHORT or LONG section from the model response."""
+    pattern = rf'{section}:\s*(.*?)(?=\n(?:SHORT|LONG):|$)'
+    match = re.search(pattern, text, re.DOTALL)
+    return match.group(1).strip() if match else ""
