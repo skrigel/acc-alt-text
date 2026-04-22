@@ -2,7 +2,8 @@ import { useState } from 'react'
 import './App.css'
 import { ResultsModal, type SvgResult } from './ResultsModal'
 
-const API_URL = import.meta.env.DEV ? "http://localhost:8000" : import.meta.env.BASE_URL;
+// const API_URL = import.meta.env.DEV ? "http://localhost:8000" : import.meta.env.BASE_URL;
+const API_URL = import.meta.env.DEV ? "http://localhost:8000" : "";
 
 function App() {
   const [url, setUrl] = useState('')
