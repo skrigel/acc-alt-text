@@ -29,8 +29,12 @@ async def call_llm(prompt: str) -> str:
             },
             timeout=60.0
         )
+        if response.status_code != 200 or not response.content:
+            raise RuntimeError(
+                f"HuggingFace API error {response.status_code}: {response.text!r}"
+            )
         result = response.json()
-    return result["choices"][0]["message"]["content"] 
+    return result["choices"][0]["message"]["content"]
 
 
 async def generate_single(i: int, svg: SvgData) -> dict:
