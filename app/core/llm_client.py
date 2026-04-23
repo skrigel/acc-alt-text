@@ -1,39 +1,30 @@
 import asyncio
 from dotenv import load_dotenv
 from app.models.schemas import SvgData
+from huggingface_hub import AsyncInferenceClient
 import re
 import os
 
 load_dotenv()
 
-import httpx
-import os
-
 HF_TOKEN = os.getenv("HF_TOKEN")
-MODEL=os.getenv("MODEL_ID")
+MODEL = os.getenv("MODEL_ID")
+
+_client = AsyncInferenceClient(token=HF_TOKEN)
 
 async def generate_alt_text(svgs: list[SvgData], context):
     # TODO: do we wna to pass in additional context?
     return await asyncio.gather(*[generate_single(i, svg) for i, svg in enumerate(svgs)])
 
 async def call_llm(prompt: str) -> str:
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api-inference.huggingface.co/v1/chat/completions",
-            headers={"Authorization": f"Bearer {HF_TOKEN}"},
-            json={
-                "model": MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 1024,
-            },
-            timeout=60.0
-        )
-        if response.status_code != 200 or not response.content:
-            raise RuntimeError(
-                f"HuggingFace API error {response.status_code}: {response.text!r}"
-            )
-        result = response.json()
-    return result["choices"][0]["message"]["content"]
+    response = await _client.chat_completion(
+        model=MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1024,
+    )
+    content = response.choices[0].message.content
+    # TODO: better handling
+    return content if content else 'N/A'
 
 
 async def generate_single(i: int, svg: SvgData) -> dict:
