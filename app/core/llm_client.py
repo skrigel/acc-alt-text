@@ -10,7 +10,7 @@ load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
 MODEL = os.getenv("MODEL_ID")
 
-_client = AsyncInferenceClient(token=HF_TOKEN)
+_client = AsyncInferenceClient(token=HF_TOKEN, model=MODEL)
 
 async def generate_alt_text(svgs: list[SvgData], context):
     # TODO: do we wna to pass in additional context?
@@ -18,7 +18,6 @@ async def generate_alt_text(svgs: list[SvgData], context):
 
 async def call_llm(prompt: str) -> str:
     response = await _client.chat_completion(
-        model=MODEL,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=1024,
     )
