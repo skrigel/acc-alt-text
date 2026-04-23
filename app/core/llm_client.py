@@ -1,5 +1,4 @@
 import asyncio
-import anthropic
 from dotenv import load_dotenv
 from app.models.schemas import SvgData
 import re
@@ -20,7 +19,7 @@ async def generate_alt_text(svgs: list[SvgData], context):
 async def call_llm(prompt: str) -> str:
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"https://api-inference.huggingface.co/models/{MODEL}/v1/chat/completions",
+            "https://api-inference.huggingface.co/v1/chat/completions",
             headers={"Authorization": f"Bearer {HF_TOKEN}"},
             json={
                 "model": MODEL,
