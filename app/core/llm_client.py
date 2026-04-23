@@ -7,27 +7,38 @@ import os
 
 load_dotenv()
 
-client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_KEY"))
+import httpx
+import os
 
-async def generate_alt_text(svgs: list[SvgData], context: dict) -> list[dict]:
-    tasks = [generate_single(i, svg) for i, svg in enumerate(svgs) if i < 2]
-    return await asyncio.gather(*tasks)
+HF_TOKEN = os.getenv("HF_TOKEN")
+MODEL = "meta-llama/Llama-3.3-70B-Instruct"  # or whichever model
+
+async def call_llm(prompt: str) -> str:
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"https://api-inference.huggingface.co/models/{MODEL}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {HF_TOKEN}"},
+            json={
+                "model": MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1024,
+            },
+            timeout=60.0
+        )
+    result = await response.json()
+    return result["choices"][0]["message"]["content"] 
+
 
 async def generate_single(i: int, svg: SvgData) -> dict:
     """
     Generates alt text for a single SVG visualization using its
     embedded context (ariaLabel, parentContext, etc.)
     """
-    message = await client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": build_prompt(svg)}]
-    )
-    raw = next(block for block in message.content if block.type == "text").text
+    message = await call_llm(build_prompt(svg))
     return {
         "svg_index": i,
-        "short_description": parse_section(raw, "SHORT"),
-        "long_description": parse_section(raw, "LONG"),
+        "short_description": parse_section(message, "SHORT"),
+        "long_description": parse_section(message, "LONG"),
     }
 
 def build_prompt(svg: SvgData) -> str:
