@@ -11,7 +11,11 @@ import httpx
 import os
 
 HF_TOKEN = os.getenv("HF_TOKEN")
-MODEL = "meta-llama/Llama-3.3-70B-Instruct"  # or whichever model
+MODEL=os.getenv("MODEL_ID")
+
+async def generate_alt_text(svgs: list[SvgData], context):
+    # TODO: do we wna to pass in additional context?
+    return await asyncio.gather(*[generate_single(i, svg) for i, svg in enumerate(svgs)])
 
 async def call_llm(prompt: str) -> str:
     async with httpx.AsyncClient() as client:
@@ -25,7 +29,7 @@ async def call_llm(prompt: str) -> str:
             },
             timeout=60.0
         )
-    result = await response.json()
+        result = response.json()
     return result["choices"][0]["message"]["content"] 
 
 
