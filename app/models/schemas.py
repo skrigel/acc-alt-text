@@ -5,6 +5,7 @@ from typing import List
 
 class GenerateRequest(BaseModel):
     url: str
+    
 class AltTextResult(BaseModel):
     svg: int
     short_desc: str
