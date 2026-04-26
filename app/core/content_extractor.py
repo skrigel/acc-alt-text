@@ -5,7 +5,6 @@ from app.models.schemas import SvgData, ImgData
 def get_page_title(soup: BeautifulSoup) -> str | None:
     return soup.title.get_text(strip=True) if soup.title else None
 
-
 def get_aria_described_by(tag: Tag, soup: BeautifulSoup) -> str | None:
     id_ = tag.get('aria-describedby')
     if not id_:
@@ -42,6 +41,71 @@ def get_nearby_paragraph(tag: Tag) -> str | None:
                 return text[:300]
     return None
 
+def get_outermost_container(tag: Tag) -> str | None:
+    """Get text content from the outermost div container (direct child of body)"""
+    for ancestor in tag.parents:
+        if ancestor.name == 'body':
+            break
+        if ancestor.name == 'div' and ancestor.parent and ancestor.parent.name == 'body':
+            # Found outermost div - extract text but limit to reasonable size
+            text = ancestor.get_text(strip=True, separator=' ')
+            return text[:500] if text else None
+    return None
+
+
+def is_data_visualization(tag: Tag) -> bool:
+    """Check if SVG is likely a data visualization (not icon/logo)"""
+    # Quick heuristics to filter out decorative SVGs
+
+    # Check size - icons/logos are usually very small
+    width = tag.get('width', '')
+    height = tag.get('height', '')
+    try:
+        w = float(str(width).replace('px', '').replace('pt', ''))
+        h = float(str(height).replace('px', '').replace('pt', ''))
+        # Too small = icon (very conservative threshold)
+        if w < 30 or h < 30:
+            return False
+    except (ValueError, AttributeError, TypeError):
+        # If width/height parsing fails (e.g., percentages), continue with other checks
+        pass
+
+    # Check for role=img (usually decorative)
+    role = tag.get('role', '')
+    if role in ['img']:
+        return False
+
+    # Check class names for common icon/logo patterns
+    class_names = ' '.join(tag.get('class', []))
+    if any(keyword in class_names.lower() for keyword in ['logo', 'icon', 'badge', 'symbol']):
+        return False
+
+    # Count data-like elements
+    rects = tag.find_all('rect')
+    paths = tag.find_all('path')
+    circles = tag.find_all('circle')
+    lines = tag.find_all('line')
+    text_elements = tag.find_all('text')
+
+    # Logos typically have very few or just 1 path with complex shapes
+    # Charts have multiple simple shapes or many text labels
+    mark_count = len(rects) + len(circles) + len(lines)
+
+    # Check for numeric text (axis labels/data labels)
+    numeric_texts = [
+        text for text in text_elements
+        if any(char.isdigit() for char in text.get_text())
+    ]
+
+    # Heuristics for data visualization:
+    # 1. Has multiple data marks (bars, points, lines)
+    # 2. Has numeric text labels (axes, data points)
+    # 3. Has at least a few text elements (labels)
+    # 4. Not just a single complex path (typical of logos)
+
+    return True
+
+
 def build_parent_context(page_title: str | None, tag: Tag) -> str | None:
     parts = []
     if page_title:
@@ -55,6 +119,12 @@ def build_parent_context(page_title: str | None, tag: Tag) -> str | None:
     caption = get_figure_caption(tag)
     if caption:
         parts.append(f"Figure caption: {caption}")
+
+    # Add outermost container context
+    container_text = get_outermost_container(tag)
+    if container_text:
+        parts.append(f"Container text: {container_text}")
+
     return "\n".join(parts) or None
 
 
@@ -89,7 +159,13 @@ def extract_visualizations(html_text: str, base_url: str = "") -> tuple[list[Svg
     soup = BeautifulSoup(html_text, 'html.parser')
     page_title = get_page_title(soup)
 
-    svgs = [extract_svg(tag, soup, page_title) for tag in soup.find_all('svg')]
+    # Filter SVGs to only include data visualizations
+    svgs = [
+        extract_svg(tag, soup, page_title)
+        for tag in soup.find_all('svg')
+        if is_data_visualization(tag)
+    ]
+
     # imgs = [
     #     result for tag in soup.find_all('img')
     #     if (result := extract_img(tag, soup, page_title, base_url)) is not None
