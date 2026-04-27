@@ -51,6 +51,7 @@ multidict==6.7.1
 nest-asyncio==1.6.0
 openai==2.32.0
 packaging==26.1
+playwright
 parso==0.8.6
 pexpect==4.9.0
 platformdirs==4.9.6

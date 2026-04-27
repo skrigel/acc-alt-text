@@ -1,11 +1,6 @@
 import { useState, useCallback } from 'react'
-
-export interface SvgResult {
-  index: number
-  type: 'svg' | 'img'
-  short_description: string
-  long_description: string
-}
+import { type SvgResult }from './constants'
+import parse from 'html-react-parser';
 
 interface ResultsModalProps {
   results: SvgResult[]
@@ -34,7 +29,9 @@ export function ResultsModal({ results }: ResultsModalProps) {
 
   if (results.length === 0) return null
 
-  const item = results[current]
+  const item: SvgResult = results[current]
+
+  console.log("raw,", item.raw)
 
   return (
     <>
@@ -250,7 +247,10 @@ export function ResultsModal({ results }: ResultsModalProps) {
             <span className="rs-index">
               visualization {current + 1} of {results.length} · {item.type ? item.type.toUpperCase() : 'SVG'}
             </span>
-
+            <div>
+              
+              {parse(item.raw)}
+            </div>
             <div className="rs-descriptions">
               <div className="rs-block">
                 <div className="rs-block-header">
