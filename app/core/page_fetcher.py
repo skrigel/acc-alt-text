@@ -24,11 +24,21 @@ def _is_viz_iframe(tag) -> bool:
 
 
 async def _fetch_page(browser: Browser, url: str, timeout_ms: int) -> str:
-    page = await browser.new_page()
+    context = await browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1280, "height": 800},
+        locale="en-US",
+        timezone_id="America/New_York",
+    )
+    page = await context.new_page()
     await page.goto(url, wait_until="load", timeout=timeout_ms)
     await page.wait_for_timeout(3000)
     html = await page.content()
-    await page.close()
+    await context.close()
     return html
 
 
