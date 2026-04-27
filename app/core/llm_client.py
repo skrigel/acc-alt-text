@@ -1,6 +1,6 @@
 import asyncio
 from dotenv import load_dotenv
-from app.models.schemas import SvgData
+from app.models.schemas import SvgData, GenerateResponse
 from app.core.svg_extractor import parse_svg_to_chart
 from huggingface_hub import AsyncInferenceClient
 import re
@@ -43,11 +43,15 @@ async def generate_single(i: int, svg: SvgData, chart: ChartRepresentation) -> d
     embedded context (ariaLabel, parentContext, etc.)
     """
 
-    message = await call_llm(build_prompt(svg, chart))
+    # message = await call_llm(build_prompt(svg, chart))
     return {
-        "svg_index": i,
-        "short_description": parse_section(message, "SHORT"),
-        "long_description": parse_section(message, "LONG"),
+        "index": i,
+        "type": "svg",
+        "raw": svg.html,
+        "short_description":"meow",
+         "long_description": "meow meow"
+        # "short_description": parse_section(message, "SHORT"),
+        # "long_description": parse_section(message, "LONG"),
     }
 
 def build_prompt(svg: SvgData, chart=None) -> str:
@@ -104,6 +108,8 @@ LONG: <detailed description covering axes, trends, and key data points for aria-
 
 def parse_section(text: str, section: str) -> str:
     """Extracts the SHORT or LONG section from the model response."""
-    pattern = rf'{section}:\s*(.*?)(?=\n(?:SHORT|LONG):|$)'
+    pattern = rf'{section}:\s*(.*?)(?=\n?LONG:|$)' if section == "SHORT" else \
+               rf'{section}:\s*(.*?)(?=\n?SHORT:|$)'
+
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else ""

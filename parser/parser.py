@@ -32,6 +32,7 @@ class SVGParser:
         self.svg_string = svg_string
         self.root = etree.fromstring(svg_string.encode())
         self.ns = {'svg': 'http://www.w3.org/2000/svg'}
+        self._has_ns = bool(self.root.nsmap)
 
     def parse(self, context: Optional[ChartContext] = None) -> ChartRepresentation:
         """Main parsing function"""
@@ -63,16 +64,23 @@ class SVGParser:
             context=context
         )
 
+    def _xpath(self, tag: str) -> list:
+        if self._has_ns:
+            return self.root.xpath(f'.//svg:{tag}', namespaces=self.ns)
+        return self.root.xpath(f'.//*[local-name()="{tag}"]')
+
     def _extract_text_elements(self) -> list[dict]:
-        """Extract all text elements with positions and content"""
         texts = []
-        for text in self.root.xpath('.//svg:text', namespaces=self.ns):
+        for text in self._xpath('text'):
             content = ''.join(text.itertext()).strip()
             if not content:
                 continue
 
-            x = float(text.get('x', 0))
-            y = float(text.get('y', 0))
+            try:
+                x = self._parse_number(text.get('x', '0'))
+                y = self._parse_number(text.get('y', '0'))
+            except (ValueError, TypeError):
+                x, y = 0.0, 0.0
             font_size = self._parse_font_size(text.get('font-size', '12'))
             font_weight = text.get('font-weight', 'normal')
 
@@ -90,7 +98,7 @@ class SVGParser:
     def _extract_rects(self) -> list[dict]:
         """Extract rectangle elements (common for bar charts)"""
         rects = []
-        for rect in self.root.xpath('.//svg:rect', namespaces=self.ns):
+        for rect in self._xpath('rect'):
             try:
                 x = self._parse_number(rect.get('x', '0'))
                 y = self._parse_number(rect.get('y', '0'))
@@ -120,7 +128,7 @@ class SVGParser:
     def _extract_paths(self) -> list[dict]:
         """Extract path elements (common for line charts)"""
         paths = []
-        for path in self.root.xpath('.//svg:path', namespaces=self.ns):
+        for path in self._xpath('path'):
             d = path.get('d', '')
             stroke = path.get('stroke', 'none')
             fill = path.get('fill', 'none')
@@ -133,7 +141,7 @@ class SVGParser:
                 'd': d,
                 'stroke': stroke,
                 'fill': fill,
-                'strokeWidth': float(path.get('stroke-width', 1)),
+                'strokeWidth': self._safe_float(path.get('stroke-width', '1')),
                 'element': path
             })
 
@@ -142,7 +150,7 @@ class SVGParser:
     def _extract_circles(self) -> list[dict]:
         """Extract circle elements (common for scatter plots)"""
         circles = []
-        for circle in self.root.xpath('.//svg:circle', namespaces=self.ns):
+        for circle in self._xpath('circle'):
             try:
                 cx = self._parse_number(circle.get('cx', '0'))
                 cy = self._parse_number(circle.get('cy', '0'))
@@ -169,11 +177,14 @@ class SVGParser:
     def _extract_lines(self) -> list[dict]:
         """Extract line elements (for axes, grids)"""
         lines = []
-        for line in self.root.xpath('.//svg:line', namespaces=self.ns):
-            x1 = float(line.get('x1', 0))
-            y1 = float(line.get('y1', 0))
-            x2 = float(line.get('x2', 0))
-            y2 = float(line.get('y2', 0))
+        for line in self._xpath('line'):
+            try:
+                x1 = self._parse_number(line.get('x1', '0'))
+                y1 = self._parse_number(line.get('y1', '0'))
+                x2 = self._parse_number(line.get('x2', '0'))
+                y2 = self._parse_number(line.get('y2', '0'))
+            except (ValueError, TypeError):
+                continue
             stroke = line.get('stroke', 'black')
 
             lines.append({
@@ -182,7 +193,7 @@ class SVGParser:
                 'x2': x2,
                 'y2': y2,
                 'stroke': stroke,
-                'strokeWidth': float(line.get('stroke-width', 1)),
+                'strokeWidth': self._safe_float(line.get('stroke-width', '1')),
                 'element': line
             })
 
@@ -510,6 +521,12 @@ class SVGParser:
 
         return points
 
+    def _safe_float(self, value: str, default: float = 1.0) -> float:
+        try:
+            return self._parse_number(str(value))
+        except (ValueError, TypeError):
+            return default
+
     def _parse_number(self, value: str) -> float:
         """Parse numeric value, handling percentages and units"""
         if not value:
@@ -519,7 +536,7 @@ class SVGParser:
         if '%' in value_str:
             raise ValueError(f"Percentage values not supported: {value_str}")
         # Remove common units
-        value_str = re.sub(r'(px|pt|em|rem)', '', value_str, flags=re.IGNORECASE)
+        value_str = re.sub(r'(px|pt|rem|em)', '', value_str, flags=re.IGNORECASE)
         return float(value_str)
 
     def _parse_font_size(self, font_size_str: str) -> float:

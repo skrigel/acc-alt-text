@@ -7,9 +7,10 @@ class GenerateRequest(BaseModel):
     url: str
     
 class AltTextResult(BaseModel):
-    svg: int
-    short_desc: str
-    long_desc: str
+    svg_index: int
+    raw: str
+    short_description: str
+    long_description: str
     
 class ImgData(BaseModel):
     src: str

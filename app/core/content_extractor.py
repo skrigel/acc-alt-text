@@ -64,19 +64,19 @@ def is_data_visualization(tag: Tag) -> bool:
         w = float(str(width).replace('px', '').replace('pt', ''))
         h = float(str(height).replace('px', '').replace('pt', ''))
         # Too small = icon (very conservative threshold)
-        if w < 30 or h < 30:
+        if w < 80 or h < 80:
             return False
     except (ValueError, AttributeError, TypeError):
         # If width/height parsing fails (e.g., percentages), continue with other checks
         pass
 
     # Check for role=img (usually decorative)
-    role = tag.get('role', '')
-    if role in ['img']:
-        return False
+    # role = tag.get('role', '')
+    # if role in ['img']:
+    #     return False
 
     # Check class names for common icon/logo patterns
-    class_names = ' '.join(tag.get('class', []))
+    class_names = ' '.join(tag.get('class',[]))
     if any(keyword in class_names.lower() for keyword in ['logo', 'icon', 'badge', 'symbol']):
         return False
 
@@ -103,7 +103,11 @@ def is_data_visualization(tag: Tag) -> bool:
     # 3. Has at least a few text elements (labels)
     # 4. Not just a single complex path (typical of logos)
 
-    return True
+    return (
+    mark_count >= 3                               # bar/scatter: 3+ rects/circles/lines
+    or len(numeric_texts) >= 2                    # axis labels present
+    or (len(paths) >= 5 and len(text_elements) >= 2)  # line/area: complex paths + labels
+)
 
 
 def build_parent_context(page_title: str | None, tag: Tag) -> str | None:
@@ -134,7 +138,7 @@ def extract_svg(tag: Tag, soup: BeautifulSoup, page_title: str | None) -> SvgDat
         html=str(tag),
         ariaLabel=ariaLabel[0] if ariaLabel else '',
         ariaDescribedBy=get_aria_described_by(tag, soup),
-        parentContext=build_parent_context(page_title, tag),
+        parentContext=build_parent_context(page_title, tag)
     )
 
 # def extract_img(tag: Tag, soup: BeautifulSoup, page_title: str | None, base_url: str = "") -> ImgData | None:
