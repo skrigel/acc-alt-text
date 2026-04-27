@@ -22,6 +22,8 @@ WORKDIR /app
 
 COPY --chown=user ./requirements.txt requirements.txt
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
+RUN playwright install-deps chromium
+RUN playwright install chromium
 
 COPY --chown=user . /app
 
