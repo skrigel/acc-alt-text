@@ -43,15 +43,13 @@ async def generate_single(i: int, svg: SvgData, chart: ChartRepresentation) -> d
     embedded context (ariaLabel, parentContext, etc.)
     """
 
-    # message = await call_llm(build_prompt(svg, chart))
+    message = await call_llm(build_prompt(svg, chart))
     return {
         "index": i,
         "type": "svg",
         "raw": svg.html,
-        "short_description":"meow",
-         "long_description": "meow meow"
-        # "short_description": parse_section(message, "SHORT"),
-        # "long_description": parse_section(message, "LONG"),
+        "short_description": parse_section(message, "SHORT"),
+        "long_description": parse_section(message, "LONG"),
     }
 
 def build_prompt(svg: SvgData, chart=None) -> str:
