@@ -56,7 +56,7 @@ async def fetch_rendered_html(url: str, timeout_ms: int = 30000) -> str:
 
         if viz_urls:
             iframe_htmls = await asyncio.gather(*[
-                _fetch_page(browser, viz_url, timeout_ms)
+                _fetch_page(browser, str(viz_url), timeout_ms)
                 for viz_url in viz_urls
             ])
         else:

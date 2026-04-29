@@ -47,7 +47,6 @@ def get_outermost_container(tag: Tag) -> str | None:
         if ancestor.name == 'body':
             break
         if ancestor.name == 'div' and ancestor.parent and ancestor.parent.name == 'body':
-            # Found outermost div - extract text but limit to reasonable size
             text = ancestor.get_text(strip=True, separator=' ')
             return text[:500] if text else None
     return None
@@ -57,7 +56,6 @@ def is_data_visualization(tag: Tag) -> bool:
     """Check if SVG is likely a data visualization (not icon/logo)"""
     # Quick heuristics to filter out decorative SVGs
 
-    # Check size - icons/logos are usually very small
     width = tag.get('width', '')
     height = tag.get('height', '')
     try:
@@ -67,13 +65,7 @@ def is_data_visualization(tag: Tag) -> bool:
         if w < 80 or h < 80:
             return False
     except (ValueError, AttributeError, TypeError):
-        # If width/height parsing fails (e.g., percentages), continue with other checks
         pass
-
-    # Check for role=img (usually decorative)
-    # role = tag.get('role', '')
-    # if role in ['img']:
-    #     return False
 
     # Check class names for common icon/logo patterns
     class_names = ' '.join(tag.get('class',[]))
@@ -87,8 +79,6 @@ def is_data_visualization(tag: Tag) -> bool:
     lines = tag.find_all('line')
     text_elements = tag.find_all('text')
 
-    # Logos typically have very few or just 1 path with complex shapes
-    # Charts have multiple simple shapes or many text labels
     mark_count = len(rects) + len(circles) + len(lines)
 
     # Check for numeric text (axis labels/data labels)
@@ -97,16 +87,11 @@ def is_data_visualization(tag: Tag) -> bool:
         if any(char.isdigit() for char in text.get_text())
     ]
 
-    # Heuristics for data visualization:
-    # 1. Has multiple data marks (bars, points, lines)
-    # 2. Has numeric text labels (axes, data points)
-    # 3. Has at least a few text elements (labels)
-    # 4. Not just a single complex path (typical of logos)
 
     return (
-    mark_count >= 3                               # bar/scatter: 3+ rects/circles/lines
-    or len(numeric_texts) >= 2                    # axis labels present
-    or (len(paths) >= 5 and len(text_elements) >= 2)  # line/area: complex paths + labels
+    mark_count >= 3                              
+    or len(numeric_texts) >= 2                 
+    or (len(paths) >= 5 and len(text_elements) >= 2)  
 )
 
 

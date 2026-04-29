@@ -64,7 +64,6 @@ def build_prompt(svg: SvgData, chart=None) -> str:
 
     context_block = "\n".join(context_lines) if context_lines else "No context available."
 
-    # If we have a parsed chart, use structured JSON; otherwise fall back to raw HTML
     if chart:
         chart_json = json.dumps(chart.model_dump(), indent=2)
         return f"""You are an accessibility expert. Generate WCAG-compliant alt text for this data visualization.
