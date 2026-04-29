@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dotenv import load_dotenv
 from app.models.schemas import SvgData, GenerateResponse
 from app.core.svg_extractor import parse_svg_to_chart
@@ -7,6 +8,8 @@ import re
 import os
 import json
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 from parser.schemas import ChartRepresentation
 
@@ -63,9 +66,11 @@ def build_prompt(svg: SvgData, chart=None) -> str:
         context_lines.append(f"Aria described-by text: {svg.ariaDescribedBy}")
 
     context_block = "\n".join(context_lines) if context_lines else "No context available."
+    logger.debug("context_block:\n%s", context_block)
 
     if chart:
         chart_json = json.dumps(chart.model_dump(), indent=2)
+        logger.debug("chart_json:\n%s", chart_json)
         return f"""You are an accessibility expert. Generate WCAG-compliant alt text for this data visualization.
 
 Page context:
