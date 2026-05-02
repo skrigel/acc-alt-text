@@ -22,7 +22,7 @@ def build_img_index(split="train"):
     """
     converts vistext data (in vistext_train_test) into a dict mapping img_id to corresponding data (L1 properties, captions, and scenegraph/datatable)
     """
-    with open(f"../{VISTEXT_DATA_DIR}/data_{split}.json", "r") as f:
+    with open(f"{VISTEXT_DATA_DIR}/data_{split}.json", "r") as f:
         data = json.load(f)
 
     img_index = defaultdict(list)
@@ -162,10 +162,12 @@ if __name__ == "__main__":
 
     parser.add_argument("--gen_caption_fp", type=str, required=True)
     parser.add_argument("--img_subset", nargs="+", type=str, default=[])
+    parser.add_argument("--debug", action="store_true")
 
     args = parser.parse_args()
     img_subset = args.img_subset
     gen_caption_file = args.gen_caption_fp
+    debug = args.debug
     print(f"Running L1 eval for {img_subset=}")
 
     img_index = build_img_index("train")
@@ -180,8 +182,21 @@ if __name__ == "__main__":
     scores = {}
 
     for img in img_subset:
-        gt_l1_properties = img_index[img]['L1_properties']
+        gt_data = img_index[img]['L1_properties']
+        gt_l1_properties = {
+            "chart_type": gt_data[0],
+            "title": gt_data[1],
+            "x_label": gt_data[2],
+            "y_label": gt_data[3],
+            "x_scale": gt_data[4],
+            "y_scale": gt_data[5],
+        }
         gen_caption = gen_caption_data[img]
+        if debug:
+            print(f"{gen_caption=}")
+            print(f"{gt_l1_properties=}")
         scores[img] = l1_full_eval(gt_l1_properties, gen_caption)
+
+    print(scores)
 
     # TODO code for storing results after decide how we want to store
