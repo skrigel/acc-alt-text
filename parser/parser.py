@@ -1,6 +1,7 @@
 from lxml import etree
-from typing import Optional, Literal
+from typing import Literal, Optional, cast
 import re
+import json
 from parser.schemas import (
     ChartRepresentation,
     ChartMetadata,
@@ -11,540 +12,523 @@ from parser.schemas import (
     ChartData,
     ChartContext,
 )
+import re
+from bs4 import Tag
 
-class VizParser:
-    """Parse Parent Component of SVGs"""
-    def __init__(self, container_string: str, svg_string: str):
-        self.container_string = container_string
-        self.svg_string = svg_string
+VIZ_KEYWORDS = ['linechart','chart', 'graph', 'plot', 'visualization', 'viz']
 
-    def parse_svg(self, svg_string: str, context: Optional[ChartContext] = None) -> ChartRepresentation:
-        """Convenience function to parse SVG string"""
-        parser = SVGParser(svg_string)
-        return parser.parse(context)
+class SvgContainer:
+    def __init__(self, svg_tag):
+        self.svg = svg_tag
+        self.ancestors = self._walk_up()
+    
+    def _walk_up(self):
+        result = []
+        for parent in self.svg.parents:
+            if parent.name in ('body', 'html', '[document]', None):
+                break
+            result.append({
+                'tag': parent.name,
+                'class': ' '.join(parent.get('class', [])),
+                'id': parent.get('id', ''),
+                'aria-label': parent.get('aria-label', ''),
+                'attrs': dict(parent.attrs),
+                'title': parent.get('title', ''),
+                'alt-text': parent.get('alt-text', ''),
+            })
+        return result
+    
+    def _get_tag_context(self) -> dict:
 
+        aria = self.svg.get('aria-label') or ''
+        alt= self.svg.get('alt-text') or ''
+        out = {}
+
+        out['aria-label'] = aria
+        out['described-by'] = alt
+
+        return out
+    
+
+    def _get_parent_context(self) -> str:
+        parts = []
+
+        fig = self.svg.find_parent('figure')
+        if fig:
+            cap = fig.find('figcaption')
+            if cap: parts.append(cap.get_text(strip=True))
+
+        for ancestor in self.svg.parents:
+            label = ancestor.get('aria-label') or ancestor.get('title')
+            if label:
+                parts.append(label)
+                break
+
+        # first heading + first paragraph in the nearest section-like ancestor
+        for ancestor in self.svg.find_parents(['section', 'article', 'div']):
+            headings = ancestor.find_all(['h1', 'h2', 'h3'])
+            paras = ancestor.find_all('p')
+            if headings or paras:
+                parts += [h.get_text(strip=True) for h in headings]
+                parts += [p.get_text(strip=True) for p in paras]
+                break
+
+        return ' | '.join(p for p in parts if p)
+
+    def _get_page_context(self) -> str:
+        """Page-level context: <title> tag + headings from article/main ancestors only (no siblings)."""
+        parts = []
+
+        html_root = self.svg.find_parent('html')
+        if html_root:
+            title_tag = html_root.find('title')
+            if title_tag:
+                parts.append(title_tag.get_text(strip=True))
+
+        seen = set()
+        for ancestor in self.svg.find_parents(['article', 'main']):
+            for h in ancestor.find_all(['h1', 'h2', 'h3']):
+                text = h.get_text(strip=True)
+                if text and text not in seen:
+                    parts.append(text)
+                    seen.add(text)
+            break  
+
+        return ' | '.join(p for p in parts if p)
+
+    def _check_svg_tag(self) -> bool:
+        """Check the <svg> element's own attributes."""
+        attrs = (self.svg.get('aria-label') or '').lower() + ''.join((self.svg.get('class') or '')).lower() 
+        if any(k in attrs for k in VIZ_KEYWORDS):
+            return True
+        data_comp = (self.svg.get('data-component') or '').lower()
+        if any(k in data_comp for k in VIZ_KEYWORDS):
+            return True
+        return False
+
+    def _check_svg_internals(self) -> bool:
+        """Check elements inside the SVG for chart signals."""
+        for tag in ('title', 'desc'):
+            el = self.svg.find(tag)
+            if el and any(k in el.get_text().lower() for k in VIZ_KEYWORDS):
+                return True
+            
         
-
-class SVGParser:
-    """Parse SVG visualizations into structured chart representations"""
-
-    def __init__(self, svg_string: str):
-        self.svg_string = svg_string
-        self.root = etree.fromstring(svg_string.encode())
-        self.ns = {'svg': 'http://www.w3.org/2000/svg'}
-        self._has_ns = bool(self.root.nsmap)
-
-    def parse(self, context: Optional[ChartContext] = None) -> ChartRepresentation:
-        """Main parsing function"""
-        # Extract all elements
-        text_elements = self._extract_text_elements()
-        rects = self._extract_rects()
-        paths = self._extract_paths()
-        circles = self._extract_circles()
-        lines = self._extract_lines()
-
-        # Parse chart components
-        title = self._extract_title(text_elements)
-        axes = self._parse_axes(text_elements, lines)
-        chart_type = self._infer_chart_type(rects, paths, circles, lines)
-        data = self._extract_data(rects, paths, circles, lines, chart_type, axes)
-
-        metadata = ChartMetadata(
-            title=title,
-            chartType=chart_type,
-            inferredType=None
-        )
-
-        return ChartRepresentation(
-            metadata=metadata,
-            axes=axes,
-            data=data,
-            legend=None,  # TODO: implement legend extraction
-            annotations=None,  # TODO: implement annotation extraction
-            context=context
-        )
-
-    def _xpath(self, tag: str) -> list:
-        if self._has_ns:
-            return self.root.xpath(f'.//svg:{tag}', namespaces=self.ns)
-        return self.root.xpath(f'.//*[local-name()="{tag}"]')
-
-    def _extract_text_elements(self) -> list[dict]:
-        texts = []
-        for text in self._xpath('text'):
-            content = ''.join(text.itertext()).strip()
-            if not content:
-                continue
-
-            try:
-                x = self._parse_number(text.get('x', '0'))
-                y = self._parse_number(text.get('y', '0'))
-            except (ValueError, TypeError):
-                x, y = 0.0, 0.0
-            font_size = self._parse_font_size(text.get('font-size', '12'))
-            font_weight = text.get('font-weight', 'normal')
-
-            texts.append({
-                'content': content,
-                'x': x,
-                'y': y,
-                'fontSize': font_size,
-                'fontWeight': font_weight,
-                'element': text
-            })
-
-        return texts
-
-    def _extract_rects(self) -> list[dict]:
-        """Extract rectangle elements (common for bar charts)"""
-        rects = []
-        for rect in self._xpath('rect'):
-            try:
-                x = self._parse_number(rect.get('x', '0'))
-                y = self._parse_number(rect.get('y', '0'))
-                width = self._parse_number(rect.get('width', '0'))
-                height = self._parse_number(rect.get('height', '0'))
-            except (ValueError, TypeError):
-                # Skip rects with invalid dimensions (percentages, etc.)
-                continue
-
-            fill = rect.get('fill', 'none')
-
-            # Skip background/frame rects or tiny rects
-            if fill in ['none', 'transparent', 'white', '#fff', '#ffffff'] or width < 1 or height < 1:
-                continue
-
-            rects.append({
-                'x': x,
-                'y': y,
-                'width': width,
-                'height': height,
-                'fill': fill,
-                'element': rect
-            })
-
-        return rects
-
-    def _extract_paths(self) -> list[dict]:
-        """Extract path elements (common for line charts)"""
-        paths = []
-        for path in self._xpath('path'):
-            d = path.get('d', '')
-            stroke = path.get('stroke', 'none')
-            fill = path.get('fill', 'none')
-
-            # Skip if no visible stroke or fill
-            if stroke == 'none' and fill == 'none':
-                continue
-
-            paths.append({
-                'd': d,
-                'stroke': stroke,
-                'fill': fill,
-                'strokeWidth': self._safe_float(path.get('stroke-width', '1')),
-                'element': path
-            })
-
-        return paths
-
-    def _extract_circles(self) -> list[dict]:
-        """Extract circle elements (common for scatter plots)"""
-        circles = []
-        for circle in self._xpath('circle'):
-            try:
-                cx = self._parse_number(circle.get('cx', '0'))
-                cy = self._parse_number(circle.get('cy', '0'))
-                r = self._parse_number(circle.get('r', '0'))
-            except (ValueError, TypeError):
-                continue
-
-            fill = circle.get('fill', 'none')
-
-            # Skip tiny circles (likely decorative)
-            if r < 1:
-                continue
-
-            circles.append({
-                'cx': cx,
-                'cy': cy,
-                'r': r,
-                'fill': fill,
-                'element': circle
-            })
-
-        return circles
-
-    def _extract_lines(self) -> list[dict]:
-        """Extract line elements (for axes, grids)"""
-        lines = []
-        for line in self._xpath('line'):
-            try:
-                x1 = self._parse_number(line.get('x1', '0'))
-                y1 = self._parse_number(line.get('y1', '0'))
-                x2 = self._parse_number(line.get('x2', '0'))
-                y2 = self._parse_number(line.get('y2', '0'))
-            except (ValueError, TypeError):
-                continue
-            stroke = line.get('stroke', 'black')
-
-            lines.append({
-                'x1': x1,
-                'y1': y1,
-                'x2': x2,
-                'y2': y2,
-                'stroke': stroke,
-                'strokeWidth': self._safe_float(line.get('stroke-width', '1')),
-                'element': line
-            })
-
-        return lines
-
-    def _extract_title(self, text_elements: list[dict]) -> Optional[str]:
-        """Extract chart title (usually largest/boldest text at top)"""
-        if not text_elements:
-            return None
-
-        # Find text with largest font size or bold weight
-        title_candidates = sorted(
-            text_elements,
-            key=lambda t: (t['fontWeight'] == 'bold', t['fontSize']),
-            reverse=True
-        )
-
-        if title_candidates:
-            return title_candidates[0]['content']
-
-        return None
-
-    def _parse_axes(self, text_elements: list[dict], lines: list[dict]) -> dict[str, AxisInfo]:
-        """Parse axis information from text and line elements"""
-        axes = {}
-
-        # Simple heuristic: horizontal text at bottom = x-axis, vertical text at left = y-axis
-        # Group texts by position
-        sorted_by_y = sorted(text_elements, key=lambda t: t['y'])
-        sorted_by_x = sorted(text_elements, key=lambda t: t['x'])
-
-        # X-axis: texts at bottom
-        if len(sorted_by_y) > 3:
-            bottom_texts = sorted_by_y[-5:]  # Last 5 texts
-            x_ticks = [t['content'] for t in bottom_texts if self._is_numeric_or_temporal(t['content'])]
-
-            if x_ticks:
-                x_type = self._infer_axis_type(x_ticks)
-                axes['x'] = AxisInfo(
-                    label=None,  # TODO: extract axis label
-                    type=x_type,
-                    scale='linear' if x_type == 'quantitative' else 'time' if x_type == 'temporal' else None,
-                    domain=self._extract_domain(x_ticks) if x_type == 'quantitative' else None,
-                    ticks=x_ticks
-                )
-
-        # Y-axis: texts at left
-        if len(sorted_by_x) > 3:
-            left_texts = sorted_by_x[:5]  # First 5 texts
-            y_ticks = [t['content'] for t in left_texts if self._is_numeric_or_temporal(t['content'])]
-
-            if y_ticks:
-                y_type = self._infer_axis_type(y_ticks)
-                axes['y'] = AxisInfo(
-                    label=None,  # TODO: extract axis label
-                    type=y_type,
-                    scale='linear' if y_type == 'quantitative' else None,
-                    domain=self._extract_domain(y_ticks) if y_type == 'quantitative' else None,
-                    ticks=y_ticks
-                )
-
-        return axes
-
-    def _is_numeric_or_temporal(self, text: str) -> bool:
-        """Check if text is numeric or temporal"""
-        # Try to parse as number
-        try:
-            float(text)
+        for g in self.svg.find_all('g'):
+            clas = ' '.join(g.get('class', [])).lower()
+            if any(k in clas for k in ['tick', 'axis', 'legend', 'marks']):
+                return True
+            data_comp = (g.get('data-component') or '').lower()
+            if any(k in data_comp for k in ['axis', 'tick', 'legend', 'chart', 'grid', 'mark']):
+                return True
+            
+        # numeric text elements (tick labels like "100", "$1.2M", "+18%")
+        texts = [t.get_text().strip() for t in self.svg.find_all('text')]
+        # just match a bunch of different patterns and pray
+        numeric_texts = sum(1 for t in texts if re.match(r'^-?[\d,.$%+KMB]+$', t))
+        if self.svg.find('path') and numeric_texts >= 2:
             return True
-        except ValueError:
-            pass
+        return False
 
-        # Check for year pattern
-        if re.match(r'^\d{4}$', text):
+    def _check_structure(self) -> bool:
+        """Heuristic: charts always have tick labels as <text> + data marks.
+        """
+        text_count = len(self.svg.find_all('text'))
+        if text_count < 3:
+            return False
+
+        has_marks = bool(self.svg.find(['path', 'rect', 'line', 'circle', 'polyline']))
+        transformed_groups = sum(1 for g in self.svg.find_all('g') if g.get('transform'))
+        has_viewbox = bool(self.svg.get('viewBox'))
+
+        # D3 axis pattern: multiple translated groups + marks + text labels
+        if transformed_groups >= 2 and has_marks:
             return True
 
-        # Check for date patterns
-        if re.match(r'\d{1,2}/\d{1,2}', text) or re.match(r'\d{4}-\d{2}', text):
+        g_count = len(self.svg.find_all('g', recursive=False))
+        if has_viewbox and g_count >= 2 and has_marks:
             return True
+
+    
 
         return False
 
-    def _infer_axis_type(self, ticks: list[str]) -> Literal["quantitative", "temporal", "nominal", "ordinal"]:
-        """Infer axis type from tick values"""
-        if not ticks:
-            return 'nominal'
+    def _check_ancestors(self) -> bool:
+        """Walk up the DOM checking ancestor class/id/attrs for viz keywords."""
+        for a in self.ancestors:
+            if any(kw in a['class'] for kw in VIZ_KEYWORDS):
+                return True
+            if any(kw in a['id'] for kw in VIZ_KEYWORDS):
+                return True
+            for k, v in a['attrs'].items():
+                haystack = (k + ' ' + str(v)).lower()
+                if any(kw in haystack for kw in VIZ_KEYWORDS):
+                    return True
+        return False
+    
+    def is_icon(self):
 
-        # Check if all numeric
-        try:
-            [float(t) for t in ticks]
-            return 'quantitative'
-        except ValueError:
-            pass
+        if "icon" in self.svg.get('role',"") or "icon" in " ".join(self.svg.get("class",[])):
+            return True
+        return False
 
-        # Check if temporal (years)
-        if all(re.match(r'^\d{4}$', str(t)) for t in ticks):
-            return 'temporal'
+    def is_data_viz(self) -> bool:
 
-        # Check if ordinal (could be ordered categories)
-        # For now, default to nominal
-        return 'nominal'
+        if self.is_icon():
+            return False
+        
+        return (
+            self._check_svg_tag()
+            or self._check_svg_internals()
+            or self._check_structure()
+        )
 
-    def _extract_domain(self, ticks: list[str]) -> Optional[tuple[float, float]]:
-        """Extract numeric domain from ticks"""
-        try:
-            numeric_ticks = [float(t) for t in ticks]
-            return (min(numeric_ticks), max(numeric_ticks))
-        except ValueError:
-            return None
+    def parse_attrs(self):
+        result = {}
+        for a in self.ancestors:
+            for k, v in a['attrs'].items():
+                if not k.startswith('data-'):
+                    continue
+                try:
+                    parsed = json.loads(v)
+                    result[k] = parsed
+                except (json.JSONDecodeError, TypeError):
+                    if v:
+                        result[k] = v
+        return result
 
-    def _infer_chart_type(self, rects: list, paths: list, circles: list, lines: list) -> str:
-        """Infer chart type from visual marks"""
-        # Simple heuristics
-        if len(rects) > 3:
+    def _get_attr(self, tag, attr):
+        if attr == 'class':
+            values = tag.get(attr, [])
+            return ', '.join(values)
+        return tag.get(attr, '')
+
+    def external_data(self):
+        for a in self.ancestors:
+            state = a['attrs'].get('data-state')
+            if state:
+                try:
+                    return json.loads(state)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return None
+
+    def chart_type_from_context(self):
+        state = self.external_data()
+        if state:
+            variation = state.get('componentVariation', '').lower()
+            for t in ('bar', 'line', 'scatter', 'area', 'pie'):
+                if t in variation:
+                    return t
+        for a in self.ancestors:
+            haystack = (a['class'] + ' ' + a['id']).lower()
+            for t in ('bar', 'line', 'scatter', 'area', 'pie'):
+                if t in haystack:
+                    return t
+        return None
+
+    def show_container(self, height=3):
+        height = min(len(self.ancestors) - 1, height)
+        print(f"<svg> class='{self._get_attr(self.svg, 'class')}' id='{self._get_attr(self.svg, 'id')}' </svg>")
+        for i, a in enumerate(self.ancestors[:height]):
+            indent = '  ' * (i + 1)
+            print(f"{indent}↑ <{a['tag']}> class='{a['class']}' id='{a['id']}' title='{a['title']}'")
+            for k, v in a['attrs'].items():
+                if k not in ('class', 'id'):
+                    print(f"{indent}    {k}: {v}")
+
+    def show_hierarchy(self):
+        print("SVG")
+        for i, a in enumerate(self.ancestors):
+            indent = '  ' * (i + 1)
+            print(f"{indent}↑ <{a['tag']}>")
+            for k, v in a['attrs'].items():
+                print(f"{indent}    {k}: {v}")
+
+    def debug_is_data_viz(self):
+        """Print which checks pass/fail — call this on any SVG you suspect is a miss."""
+        results = {
+            'svg_tag':   self._check_svg_tag(),
+            'internals': self._check_svg_internals(),
+            'structure': self._check_structure(),
+            'ancestors': self._check_ancestors(),
+        }
+        print(f"is_data_viz → {any(results.values())}")
+        for name, val in results.items():
+            print(f"  {name:12s}: {'✓' if val else '✗'}")
+
+
+import re
+
+class SVGParser:
+    def __init__(self, container: SvgContainer):
+        self.container = container
+        self.svg = container.svg
+        self.axes = self._extract_axes()
+        self.chart_type = self._chart_type()
+        self.data = self._extract_data()
+        self.parent_context = container._get_parent_context()
+        self.page_context = container._get_page_context()
+
+    def parse(self):
+        title = self.svg.get('aria-label') or ''
+        context = ChartContext(ariaLabel=title, pageContext=self.page_context, parentContext=self.parent_context)
+        return ChartRepresentation(
+            context=context,
+            metadata=ChartMetadata(title=title, chartType=self.chart_type or 'unknown'),
+            axes=self.axes,
+            data=self.data,
+        )
+
+    def _chart_type(self):
+        rects = self._extract_rects()
+        if len(rects) > 2:
             return 'bar'
-
-        # Check for line chart (path with stroke, no fill)
-        line_paths = [p for p in paths if p['stroke'] != 'none' and p['fill'] == 'none']
-        if line_paths:
+        path = self.svg.find('path')
+        if path:
+            if path.get('fill', '').lower() == 'none' and path.get('stroke'):
+                return 'line'
             return 'line'
-
-        # Check for scatter (multiple circles)
-        if len(circles) > 5:
+        if self.svg.find('circle'):
             return 'scatter'
+        return self.container.chart_type_from_context() or 'unknown'
 
-        # Check for area chart (path with fill)
-        area_paths = [p for p in paths if p['fill'] != 'none']
-        if area_paths:
-            return 'area'
+    def _classify_by_ticks(self, g):
+        children = g.find_all('g', recursive=False)
+        xs, ys = [], []
+        for cg in children:
+            m = re.match(r'translate\(([^,]+),\s*([^)]+)\)', cg.get('transform', ''))
+            if m:
+                xs.append(float(m.group(1)))
+                ys.append(float(m.group(2)))
+        if len(xs) < 2:
+            return None
+        if all(abs(y) < 1 for y in ys):
+            return 'x'
+        if all(abs(x) < 1 for x in xs):
+            return 'y'
+        return None
 
-        return 'unknown'
+    def _axis_by_label(self):
+        groups = {'x': None, 'y': None}
+        for g in self.svg.find_all('g'):
+            label = ((g.get('data-component') or '') + ' ' + ' '.join(g.get('class', []))).lower()
+            if ('x-axis' in label or 'xaxis' in label) and not groups['x']:
+                groups['x'] = g
+            elif ('y-axis' in label or 'yaxis' in label) and not groups['y']:
+                groups['y'] = g
+        return groups
 
-    def _extract_data(self, rects: list, paths: list, circles: list,
-                     lines: list, chart_type: str, axes: dict) -> ChartData:
-        """Extract data points based on chart type"""
-        if chart_type == 'bar':
-            return self._extract_bar_data(rects, axes)
-        elif chart_type == 'line':
-            return self._extract_line_data(paths, axes)
-        elif chart_type == 'scatter':
-            return self._extract_scatter_data(circles, axes)
-        else:
-            # Return empty data
-            return ChartData(series=[])
-
-    def _extract_bar_data(self, rects: list, axes: dict) -> ChartData:
-        """Extract data from bar chart rectangles"""
-        data_points = []
-
-        for i, rect in enumerate(rects):
-            # For vertical bars: x position = category, height = value
-            x_val = rect['x'] + rect['width'] / 2  # Center of bar
-            y_val = rect['height']  # Height represents value
-
-            data_points.append(DataPoint(
-                x=i,  # Use index for now
-                y=y_val,
-                label=None
-            ))
-
-        style = SeriesStyle(
-            color=rects[0]['fill'] if rects else None,
-            strokeWidth=None,
-            markType='bar'
-        )
-
-        series = DataSeries(
-            name=None,
-            encoding={'x': 'category', 'y': 'value'},
-            values=data_points,
-            style=style
-        )
-
-        return ChartData(series=[series])
-
-    def _extract_line_data(self, paths: list, axes: dict) -> ChartData:
-        """Extract data from line chart paths"""
-        # Parse path 'd' attribute to extract points
-        # This is simplified - real implementation would need robust path parsing
-        series_list = []
-
-        for path in paths:
-            if path['stroke'] == 'none':
+    def _axis_by_class_and_direction(self):
+        groups = {'x': None, 'y': None}
+        for g in self.svg.find_all('g'):
+            if 'axis' not in ' '.join(g.get('class', [])).lower():
                 continue
+            d = self._classify_by_ticks(g)
+            if d and not groups[d]:
+                groups[d] = g
+        return groups
 
-            points = self._parse_path_points(path['d'])
+    def _axis_by_d3_translate(self):
+        groups = {'x': None, 'y': None}
+        for g in self.svg.find_all('g'):
+            d = self._classify_by_ticks(g)
+            if d and not groups[d]:
+                groups[d] = g
+        return groups
 
-            data_points = [
-                DataPoint(x=p[0], y=p[1], label=None)
-                for p in points
-            ]
+    def _find_axis_groups(self):
+        for strategy in (self._axis_by_label, self._axis_by_class_and_direction, self._axis_by_d3_translate):
+            groups = strategy()
+            if groups['x'] or groups['y']:
+                return groups
+        return {'x': None, 'y': None}
 
-            style = SeriesStyle(
-                color=path['stroke'],
-                strokeWidth=path['strokeWidth'],
-                markType='line'
-            )
+    def _extract_ticks(self, axis_g):
+        ticks = []
+        for child in axis_g.find_all('g'):
+            text_el = child.find('text')
+            if text_el:
+                t = text_el.get_text().strip()
+                if t:
+                    ticks.append(t)
+        if not ticks:
+            for text_el in axis_g.find_all('text'):
+                t = text_el.get_text().strip()
+                if t:
+                    ticks.append(t)
+        return ticks
 
-            series = DataSeries(
-                name=None,
-                encoding={'x': 'x', 'y': 'y'},
-                values=data_points,
-                style=style
-            )
+    def _infer_axis_type(self, ticks):
+        if not ticks:
+            return 'unknown'
+        numeric = sum(1 for t in ticks if re.match(r'^-?[\d,.$%+KMBk]+$', t))
+        return 'quantitative' if numeric > len(ticks) / 2 else 'nominal'
 
-            series_list.append(series)
-
-        return ChartData(series=series_list)
-
-    def _extract_scatter_data(self, circles: list, axes: dict) -> ChartData:
-        """Extract data from scatter plot circles"""
-        data_points = []
-
-        for circle in circles:
-            data_points.append(DataPoint(
-                x=circle['cx'],
-                y=circle['cy'],
-                label=None
-            ))
-
-        style = SeriesStyle(
-            color=circles[0]['fill'] if circles else None,
-            strokeWidth=None,
-            markType='point'
-        )
-
-        series = DataSeries(
-            name=None,
-            encoding={'x': 'x', 'y': 'y'},
-            values=data_points,
-            style=style
-        )
-
-        return ChartData(series=[series])
-
-    def _parse_path_points(self, d: str) -> list[tuple[float, float]]:
-        """Parse SVG path 'd' attribute to extract x,y points"""
-        points = []
-        current_x, current_y = 0.0, 0.0
-
-        # Split path into commands and coordinates
-        # Handle M, L, H, V, C (cubic bezier), Q (quadratic), S, T
-        commands = re.findall(r'([MLHVCQSTA])\s*([\d.,\s-]+)', d, re.IGNORECASE)
-
-        for cmd, coords in commands:
-            cmd_upper = cmd.upper()
-            is_relative = cmd.islower()
-
-            # Parse coordinate numbers
-            nums = re.findall(r'([\d.-]+)', coords)
-            if not nums:
+    def _extract_axes(self):
+        axes = {}
+        for key, g in self._find_axis_groups().items():
+            if g is None:
                 continue
+            ticks = self._extract_ticks(g)
+            axes[key] = AxisInfo(
+                label=g.get('aria-label') or ' '.join(g.get('class',[])),
+                type=self._infer_axis_type(ticks),
+                ticks=ticks or None,
+            )
+        if not axes:
+            axes = self._extract_axes_flat()
+        return axes
 
+    def _extract_axes_flat(self):
+        axes = {}
+        best_g = max(
+            self.svg.find_all('g'),
+            key=lambda g: len(g.find_all('text', recursive=False)),
+            default=None,
+        )
+        if best_g is None:
+            return axes
+        texts = best_g.find_all('text', recursive=False)
+        if len(texts) < 2:
+            return axes
+        by_y, by_x = {}, {}
+        for t in texts:
             try:
-                floats = [float(n) for n in nums]
+                if t.get('y'):
+                    by_y.setdefault(round(float(t['y'])), []).append(t)
+                if t.get('x'):
+                    by_x.setdefault(round(float(t['x'])), []).append(t)
             except ValueError:
                 continue
+        if by_y:
+            x_group = max(by_y.values(), key=len)
+            if len(x_group) >= 2:
+                ticks = [t.get_text().strip() for t in x_group if t.get_text().strip()]
+                axes['x'] = AxisInfo(label=None, type=self._infer_axis_type(ticks), ticks=ticks or None)
+        if by_x:
+            y_group = max(by_x.values(), key=len)
+            if len(y_group) >= 2:
+                ticks = [t.get_text().strip() for t in y_group if t.get_text().strip()]
+                axes['y'] = AxisInfo(label=None, type=self._infer_axis_type(ticks), ticks=ticks or None)
+        return axes
 
-            if cmd_upper == 'M':  # Moveto
-                if len(floats) >= 2:
-                    x, y = floats[0], floats[1]
-                    if is_relative:
-                        current_x += x
-                        current_y += y
-                    else:
-                        current_x, current_y = x, y
-                    points.append((current_x, current_y))
+    def _extract_rects(self):
+        """Bar chart: <rect> elements. Populates value_x/value_y from data-bar-values when present."""
+        points = []
+        for rect in self.svg.find_all('rect'):
+            cls = ' '.join(rect.get('class', [])).lower()
+            if any(k in cls for k in ['overlay', 'background', 'bg', 'clip', 'hover', 'mouseover']):
+                continue
+            try:
+                w, h = float(rect.get('width', 0)), float(rect.get('height', 0))
+                if w < 1 or h < 1:
+                    continue
 
-            elif cmd_upper == 'L':  # Lineto
-                for i in range(0, len(floats) - 1, 2):
-                    x, y = floats[i], floats[i + 1]
-                    if is_relative:
-                        current_x += x
-                        current_y += y
-                    else:
-                        current_x, current_y = x, y
-                    points.append((current_x, current_y))
+                value_x, value_y = None, None
+                parent_g = rect.find_parent('g')
+                if parent_g and parent_g.get('data-bar-values'):
+                    try:
+                        bar_vals = json.loads(parent_g['data-bar-values'])
+                        bar_rects = [r for r in parent_g.find_all('rect')
+                                     if 'bar' in ' '.join(r.get('class', [])).lower()
+                                     and 'mouseover' not in ' '.join(r.get('class', [])).lower()]
+                        idx = bar_rects.index(rect) if rect in bar_rects else -1
+                        if 0 <= idx < len(bar_vals):
+                            value_x = bar_vals[idx].get('type')
+                            value_y = bar_vals[idx].get('value')
+                    except (json.JSONDecodeError, ValueError):
+                        pass
 
-            elif cmd_upper == 'H':  # Horizontal line
-                for x in floats:
-                    if is_relative:
-                        current_x += x
-                    else:
-                        current_x = x
-                    points.append((current_x, current_y))
-
-            elif cmd_upper == 'V':  # Vertical line
-                for y in floats:
-                    if is_relative:
-                        current_y += y
-                    else:
-                        current_y = y
-                    points.append((current_x, current_y))
-
-            elif cmd_upper == 'C':  # Cubic bezier - take endpoint
-                for i in range(0, len(floats) - 5, 6):
-                    # Skip control points, take endpoint
-                    x, y = floats[i + 4], floats[i + 5]
-                    if is_relative:
-                        current_x += x
-                        current_y += y
-                    else:
-                        current_x, current_y = x, y
-                    points.append((current_x, current_y))
-
-            elif cmd_upper == 'Q':  # Quadratic bezier - take endpoint
-                for i in range(0, len(floats) - 3, 4):
-                    x, y = floats[i + 2], floats[i + 3]
-                    if is_relative:
-                        current_x += x
-                        current_y += y
-                    else:
-                        current_x, current_y = x, y
-                    points.append((current_x, current_y))
-
-            elif cmd_upper in ['S', 'T']:  # Smooth bezier - take endpoint
-                for i in range(0, len(floats) - 1, 2):
-                    x, y = floats[i], floats[i + 1]
-                    if is_relative:
-                        current_x += x
-                        current_y += y
-                    else:
-                        current_x, current_y = x, y
-                    points.append((current_x, current_y))
-
+                points.append(DataPoint(x=float(rect.get('x', 0)), y=h,
+                                        value_x=value_x, value_y=value_y))
+            except (ValueError, TypeError):
+                continue
         return points
 
-    def _safe_float(self, value: str, default: float = 1.0) -> float:
-        try:
-            return self._parse_number(str(value))
-        except (ValueError, TypeError):
-            return default
+    def _extract_paths(self):
+        """Line chart: parse data points from the longest <path> (M/L or cubic bezier)."""
+        candidates = [p for p in self.svg.find_all('path') if len(p.get('d', '')) > 20]
+        if not candidates:
+            return []
+        main = max(candidates, key=lambda p: len(p.get('d', '')))
+        d = main.get('d', '')
+        n = r'[-\d.]+'
+        pts = []
+        for m in re.finditer(rf'[ML]\s*({n})[,\s]+({n})', d):
+            try:
+                pts.append((m.start(), float(m.group(1)), float(m.group(2))))
+            except ValueError:
+                pass
+        for m in re.finditer(rf'C\s*{n}[,\s]+{n}[,\s]+{n}[,\s]+{n}[,\s]+({n})[,\s]+({n})', d):
+            try:
+                pts.append((m.start(), float(m.group(1)), float(m.group(2))))
+            except ValueError:
+                pass
+        pts.sort(key=lambda p: p[0])
+        return [DataPoint(x=x, y=y,value_x=x, value_y=y) for _, x, y in pts]
 
-    def _parse_number(self, value: str) -> float:
-        """Parse numeric value, handling percentages and units"""
-        if not value:
-            return 0.0
-        # Remove units but raise error for percentages
-        value_str = str(value).strip()
-        if '%' in value_str:
-            raise ValueError(f"Percentage values not supported: {value_str}")
-        # Remove common units
-        value_str = re.sub(r'(px|pt|rem|em)', '', value_str, flags=re.IGNORECASE)
-        return float(value_str)
+    def _extract_circles(self):
+        points = []
+        for c in self.svg.find_all('circle'):
+            try:
+                points.append(DataPoint(
+                    x=float(c.get('cx', 0)),
+                    y=float(c.get('cy', 0)),
+                    label=c.get('data-key') or None,
+                    value_x=c.get('cx', 0), value_y=c.get('cx', 0)
+                ))
+            except (ValueError, TypeError):
+                continue
+        return points
 
-    def _parse_font_size(self, font_size_str: str) -> float:
-        """Parse font size from string (handles 'px', 'pt', etc.)"""
-        try:
-            return self._parse_number(font_size_str)
-        except (ValueError, TypeError):
-            return 12.0
+    def _extract_line_segments(self):
+        lines = self.svg.find_all(['line', 'svg:line'])
+        data_lines = []
+        for ln in lines:
+            try:
+                x1, y1 = float(ln.get('x1', 0)), float(ln.get('y1', 0))
+                x2, y2 = float(ln.get('x2', 0)), float(ln.get('y2', 0))
+            except (ValueError, TypeError):
+                continue
+            dx, dy = abs(x2 - x1), abs(y2 - y1)
+            if dx < 2 and dy < 20:
+                continue
+            if dx == 0 or dy == 0:
+                continue
+            data_lines.append((x1, y1, x2, y2))
+        if not data_lines:
+            return []
+        points_set = {}
+        for x1, y1, x2, y2 in data_lines:
+            points_set[x1] = y1
+            points_set[x2] = y2
+        return [DataPoint(x=x, y=y, value_x=x, value_y=y) for x, y in sorted(points_set.items())]
 
-
+    def _extract_data(self):
+        rects = self._extract_rects()
+        if len(rects) > 3:
+            return ChartData(series=[DataSeries(
+                encoding={'x': 'index', 'y': 'height'}, values=rects,
+                style=SeriesStyle(markType='bar'),
+            )])
+        paths = self._extract_paths()
+        if paths:
+            return ChartData(series=[DataSeries(
+                encoding={'x': 'x', 'y': 'y'}, values=paths,
+                style=SeriesStyle(markType='line'),
+            )])
+        segments = self._extract_line_segments()
+        if segments:
+            return ChartData(series=[DataSeries(
+                encoding={'x': 'x', 'y': 'y'}, values=segments,
+                style=SeriesStyle(markType='line'),
+            )])
+        circles = self._extract_circles()
+        if circles:
+            return ChartData(series=[DataSeries(
+                encoding={'x': 'cx', 'y': 'cy'}, values=circles,
+                style=SeriesStyle(markType='point'),
+            )])
+        return ChartData(series=[])
 

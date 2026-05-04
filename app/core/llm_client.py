@@ -2,9 +2,9 @@ import asyncio
 import logging
 from dotenv import load_dotenv
 from app.models.schemas import SvgData, GenerateResponse
-from app.core.svg_extractor import parse_svg_to_chart
 from huggingface_hub import AsyncInferenceClient
 import re
+from app.core.content_extractor import to_compressed_scenegraph
 import os
 import json
 from openai import OpenAI
@@ -55,7 +55,7 @@ async def generate_single(i: int, svg: SvgData, chart: ChartRepresentation) -> d
         "long_description": parse_section(message, "LONG"),
     }
 
-def build_prompt(svg: SvgData, chart=None) -> str:
+def build_prompt(svg: SvgData, chart: ChartRepresentation) -> str:
     # Use the structured context fields from SvgData directly
     context_lines = []
     if svg.parentContext:
@@ -65,53 +65,62 @@ def build_prompt(svg: SvgData, chart=None) -> str:
     if svg.ariaDescribedBy:
         context_lines.append(f"Aria described-by text: {svg.ariaDescribedBy}")
 
-    context_block = "\n".join(context_lines) if context_lines else "No context available."
+    
+    chart_dict = chart.to_dict()
+
+    context_block = chart_dict.get("context")
+
+    # context_block = "\n".join(context_lines) if context_lines else "No context available."
     logger.debug("context_block:\n%s", context_block)
 
-    if chart:
-        chart_json = json.dumps(chart.model_dump(), indent=2)
-        logger.debug("chart_json:\n%s", chart_json)
-        return f"""You are an accessibility expert. Generate WCAG-compliant alt text for this data visualization.
+#     if chart:
+#         # chart_json = json.dumps(chart.model_dump(), indent=2)
+#         # logger.debug("chart_json:\n%s", chart_json)
+#         return f"""You are an accessibility expert. Generate WCAG-compliant alt text for this data visualization.
 
-Page context:
-{context_block}
+# Page context:
+# {context_block}
 
-Structured chart data:
-{chart_json}
+# Structured chart data:
+# {chart_json}
 
-Using the structured data above, generate alt text that describes:
-- Chart type and title
-- Axes and their meanings
-- Key trends, patterns, or insights from the data
-- Important data points or ranges
+# Using the structured data above, generate alt text that describes:
+# - Chart type and title
+# - Axes and their meanings
+# - Key trends, patterns, or insights from the data
+# - Important data points or ranges
 
-Respond in exactly this format:
-SHORT: <one sentence for the alt attribute>
-LONG: <detailed description covering axes, trends, and key data points for aria-describedby>
-"""
-    else:
+# Respond in exactly this format:
+# SHORT: <one sentence for the alt attribute>
+# LONG: <detailed description covering axes, trends, and key data points for aria-describedby>
+# """
+#     else:
         # Fallback to raw SVG HTML
-        svg_trimmed = re.sub(r'<defs>.*?</defs>', '', svg.html, flags=re.DOTALL)
-        svg_trimmed = re.sub(r'<!--.*?-->', '', svg_trimmed, flags=re.DOTALL)
-        svg_trimmed = svg_trimmed[:4000]
+        # svg_trimmed = re.sub(r'<defs>.*?</defs>', '', svg.html, flags=re.DOTALL)
+        # svg_trimmed = re.sub(r'<!--.*?-->', '', svg_trimmed, flags=re.DOTALL)
+        # svg_trimmed = svg_trimmed[:4000]
+    svg_trimmed = to_compressed_scenegraph(chart)[:3000]
 
-        return f"""You are an accessibility expert. Generate WCAG-compliant alt text for this SVG.
+    return f"""You are an accessibility expert. Generate WCAG-compliant alt text for this SVG.
 
-Page context:
-{context_block}
+            Page context:
+            {context_block}
 
-SVG:
-{svg_trimmed}
+            Parent context:
+            
 
-Respond in exactly this format:
-SHORT: <one sentence for the alt attribute>
-LONG: <detailed description covering axes, trends, and key data points for aria-describedby>
-"""
+            SVG:
+            {svg_trimmed}
+
+            Respond in exactly this format:
+            SHORT: <one sentence for the alt attribute>
+            LONG: <detailed description covering axes, trends, and key data points for aria-describedby>
+            """
 
 def parse_section(text: str, section: str) -> str:
     """Extracts the SHORT or LONG section from the model response."""
     pattern = rf'{section}:\s*(.*?)(?=\n?LONG:|$)' if section == "SHORT" else \
-               rf'{section}:\s*(.*?)(?=\n?SHORT:|$)'
+                rf'{section}:\s*(.*?)(?=\n?SHORT:|$)'
 
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else ""
