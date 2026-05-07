@@ -1,7 +1,6 @@
 import re
 from collections import defaultdict
 import json
-import re
 import argparse
 
 VISTEXT_DATA_DIR = "data/vistext_train_test"
@@ -144,17 +143,89 @@ def score_title(gt_l1_properties, gen_caption):
 
     return 0
 
-def l1_full_eval(gt_l1_properties, gen_caption):
+def _tokenize(text: str) -> list[str]:
+    """
+    Normalise and split text into tokens, stripping leading/trailing
+    periods so sentence-final punctuation doesn't create phantom tokens.
+    """
+    return [t.strip(".") for t in normalize(text).split() if t.strip(".")]
+
+
+def _source_l1_tokens(gt_l1_properties: dict) -> set[str]:
+    """
+    Build the full set of acceptable tokens for a correct L1 description.
+    Includes chart-type synonyms, axis labels, scales, title words, and
+    structural/stop-word vocabulary that any correct description may use.
+    """
+    stop = {
+        "a", "an", "the", "of", "in", "on", "to", "for", "with", "from",
+        "at", "by", "as", "is", "are", "and", "or", "its", "this", "that",
+        "shows", "showing", "titled", "labeled", "label", "ranges", "range",
+        "scale", "axis", "xaxis", "yaxis", "along", "while", "both", "per",
+        "vs", "has", "have", "displays", "representing", "represents",
+        "x", "y",
+    }
+    tokens: set[str] = set(stop) | GENERIC_CHART_WORDS
+
+    gt_type_norm = normalize(gt_l1_properties["chart_type"])
+    for syn in GRAPH_SYNONYMS.get(gt_type_norm, [gt_type_norm]):
+        tokens.update(_tokenize(syn))
+
+    for field in ("x_label", "y_label", "x_scale", "y_scale", "title"):
+        tokens.update(_tokenize(gt_l1_properties[field]))
+
+    return tokens
+
+
+def score_hallucination(gt_l1_properties: dict, gen_caption: str) -> dict:
+    """
+    Detects tokens in the generated SHORT caption that are NOT in the source.
+
+    Returns:
+      hallucination_score        : 2 (none), 1 (one invented detail), 0 (multiple)
+      hallucinated_tokens        : list[str] — tokens not in source
+      example_has_hallucination  : bool (True if ≥1 hallucinated token)
+      hallucination_token_rate   : hallucinated / total content tokens in output
+    """
+    source_tokens = _source_l1_tokens(gt_l1_properties)
+    gen_tokens = _tokenize(gen_caption)
+
+    # Exclude pure numbers — numeric drift is captured by axis-range scoring
+    gen_content = [t for t in gen_tokens if not re.fullmatch(r"[\d.,]+", t)]
+
+    hallucinated = [t for t in gen_content if t not in source_tokens]
+
+    n_hall = len(hallucinated)
+    if n_hall == 0:
+        score = 2
+    elif n_hall == 1:
+        score = 1
+    else:
+        score = 0
+
+    token_rate = n_hall / len(gen_content) if gen_content else 0.0
+
+    return {
+        "hallucination_score": score,
+        "hallucinated_tokens": hallucinated,
+        "example_has_hallucination": n_hall > 0,
+        "hallucination_token_rate": token_rate,
+    }
+
+
+def l1_full_eval(gt_l1_properties: dict, gen_caption: str) -> dict:
     chart_type_score = score_chart_type(gt_l1_properties, gen_caption)
     title_score = score_title(gt_l1_properties, gen_caption)
     axis_label_score = score_axis_labels(gt_l1_properties, gen_caption)
     axis_range_score = score_axis_ranges(gt_l1_properties, gen_caption)
+    hall = score_hallucination(gt_l1_properties, gen_caption)
 
     return {
         "chart_type_score": chart_type_score,
         "title_score": title_score,
         "axis_labels_score": axis_label_score,
         "axis_ranges_score": axis_range_score,
+        **hall,
     }
 
 if __name__ == "__main__":
