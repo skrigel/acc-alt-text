@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .env
 app/.env
+.hf-cache/
+evals/testing.ipynb

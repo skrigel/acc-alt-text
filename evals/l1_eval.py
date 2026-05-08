@@ -49,6 +49,8 @@ def fuzzy_contains(expected, output, threshold=0.9):
     output = normalize(output)
 
     expected_words = expected.split()
+    if not expected_words:
+        return False
 
     matches = sum(1 for word in expected_words if word in output)
     return matches / len(expected_words) >= threshold
@@ -103,10 +105,13 @@ def axis_range_helper(gt_range, gen_caption):
 
     if len(gt_numbers) != 2:
         print(f"Unexpected number of numbers in gt_range: {gt_range}")
+        return 0
 
     for i, num in enumerate(gen_numbers[:-1]):
-        if abs(num - gt_numbers[0]) <= 0.1 * abs(gt_numbers[0]):  # within 10% of gt number left side of scale
-            if abs(gen_numbers[i+1] - gt_numbers[1]) <= 0.1 * abs(gt_numbers[1]):  # within 10% of gt number right side of scale
+        left_tol = max(0.1 * abs(gt_numbers[0]), 1e-9)
+        right_tol = max(0.1 * abs(gt_numbers[1]), 1e-9)
+        if abs(num - gt_numbers[0]) <= left_tol:
+            if abs(gen_numbers[i+1] - gt_numbers[1]) <= right_tol:
                 score = 1
                 break
 
@@ -213,18 +218,42 @@ def score_hallucination(gt_l1_properties: dict, gen_caption: str) -> dict:
     }
 
 
+def normalize_l1_properties(example_or_props: dict) -> dict:
+    """Return the L1 property dict expected by the individual scorers."""
+    if "L1_properties" in example_or_props:
+        props = example_or_props["L1_properties"]
+        return {
+            "chart_type": props[0],
+            "title": props[1],
+            "x_label": props[2],
+            "y_label": props[3],
+            "x_scale": props[4],
+            "y_scale": props[5],
+        }
+    return example_or_props
+
+
 def l1_full_eval(gt_l1_properties: dict, gen_caption: str) -> dict:
+    gt_l1_properties = normalize_l1_properties(gt_l1_properties)
     chart_type_score = score_chart_type(gt_l1_properties, gen_caption)
     title_score = score_title(gt_l1_properties, gen_caption)
     axis_label_score = score_axis_labels(gt_l1_properties, gen_caption)
     axis_range_score = score_axis_ranges(gt_l1_properties, gen_caption)
     hall = score_hallucination(gt_l1_properties, gen_caption)
+    total_l1_score = (
+        chart_type_score
+        + title_score
+        + axis_label_score
+        + axis_range_score
+        + hall["hallucination_score"]
+    )
 
     return {
         "chart_type_score": chart_type_score,
         "title_score": title_score,
         "axis_labels_score": axis_label_score,
         "axis_ranges_score": axis_range_score,
+        "total_l1_score": total_l1_score,
         **hall,
     }
 

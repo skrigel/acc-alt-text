@@ -1,7 +1,8 @@
 """
-Claude Sonnet judge for L2/L3 scoring.
+LLM judges for L2/L3 scoring.
 
-Judge model: claude-sonnet-4-6 (Anthropic API).
+Default judge model: Qwen/Qwen2.5-7B-Instruct via Hugging Face Router.
+Optional Claude judge model: claude-sonnet-4-6 via Anthropic API.
 Scores are kept separate from the programmatic L1 scorer in l1_eval.py.
 
 Score fields returned:
@@ -26,9 +27,9 @@ import re
 import time
 from typing import Optional
 
-import anthropic
-
-JUDGE_MODEL = "claude-sonnet-4-6"
+HF_BASE_URL = "https://router.huggingface.co/v1"
+DEFAULT_HF_JUDGE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+CLAUDE_JUDGE_MODEL = "claude-sonnet-4-6"
 
 SCORE_FIELDS_L2 = [
     "statistical_relational_completeness",
@@ -189,6 +190,14 @@ def _default_failed(raw: str) -> dict:
 
 class ClaudeSonnetJudge:
     def __init__(self, max_retries: int = 3, retry_delay: float = 5.0):
+        try:
+            import anthropic
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "The Anthropic package is required for L2/L3 judging. "
+                "Install project dependencies with `pip install -r requirements.txt`."
+            ) from exc
+
         self.client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         self.max_retries = max_retries
         self.retry_delay = retry_delay
@@ -200,7 +209,7 @@ class ClaudeSonnetJudge:
         for attempt in range(self.max_retries):
             try:
                 msg = self.client.messages.create(
-                    model=JUDGE_MODEL,
+                    model=CLAUDE_JUDGE_MODEL,
                     max_tokens=1024,
                     system=JUDGE_SYSTEM,
                     messages=[{"role": "user", "content": prompt}],
@@ -217,6 +226,96 @@ class ClaudeSonnetJudge:
         failed = _default_failed(str(last_err))
         failed["raw_judge_response"] = str(last_err)
         return failed
+
+
+class HFRouterJudge:
+    def __init__(
+        self,
+        model_name: str = DEFAULT_HF_JUDGE_MODEL,
+        max_retries: int = 3,
+        retry_delay: float = 5.0,
+    ):
+        try:
+            from openai import OpenAI
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "The OpenAI package is required for Hugging Face Router calls. "
+                "Install project dependencies with `pip install -r requirements.txt`."
+            ) from exc
+
+        self.client = OpenAI(
+            base_url=HF_BASE_URL,
+            api_key=os.environ["HF_TOKEN"],
+        )
+        self.model_name = model_name
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+    def judge(self, example: dict, short: str, long: str) -> dict:
+        prompt = _build_judge_prompt(example, short, long)
+        last_err = None
+
+        for attempt in range(self.max_retries):
+            try:
+                resp = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": JUDGE_SYSTEM},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=1024,
+                    temperature=0.0,
+                )
+                raw = resp.choices[0].message.content or ""
+                parsed = _parse_judge_response(raw)
+                parsed["raw_judge_response"] = raw
+                parsed["judge_model"] = self.model_name
+                return parsed
+            except Exception as e:
+                last_err = e
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * (attempt + 1))
+
+        failed = _default_failed(str(last_err))
+        failed["raw_judge_response"] = str(last_err)
+        failed["judge_model"] = self.model_name
+        return failed
+
+
+class LocalTransformersJudge:
+    def __init__(
+        self,
+        model_name: str = DEFAULT_HF_JUDGE_MODEL,
+        torch_dtype: str = "auto",
+        device_map: str = "auto",
+        cache_dir: str | None = None,
+        max_new_tokens: int = 1024,
+    ):
+        from evals.local_transformers import LocalTransformersModel
+
+        self.model_name = model_name
+        self.max_new_tokens = max_new_tokens
+        self.model = LocalTransformersModel(
+            model_name=model_name,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
+            cache_dir=cache_dir,
+        )
+
+    def judge(self, example: dict, short: str, long: str) -> dict:
+        prompt = _build_judge_prompt(example, short, long)
+        raw = self.model.generate_chat(
+            [
+                {"role": "system", "content": JUDGE_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            max_new_tokens=self.max_new_tokens,
+            temperature=0.0,
+        )
+        parsed = _parse_judge_response(raw)
+        parsed["raw_judge_response"] = raw
+        parsed["judge_model"] = self.model_name
+        return parsed
 
 
 def scores_from_result(result: dict) -> dict:

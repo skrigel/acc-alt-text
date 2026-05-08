@@ -38,12 +38,19 @@ All commands are run from the **repo root**.
 pip install -r requirements.txt
 ```
 
-Required environment variables (place in a `.env` file at the repo root):
+Required environment variables for hosted Hugging Face Router runs:
 
 ```
-OPENAI_API_KEY=...   # for gpt-4o-mini generations
 HF_TOKEN=...         # for HuggingFace-routed model generations (llama, mistral, qwen)
-ANTHROPIC_API_KEY=.. # for the Claude Sonnet judge
+```
+
+No API key is required for local inference with `--backend local` and `--judge local`, but the first run may download model weights from Hugging Face unless they are already cached.
+
+Optional environment variables:
+
+```
+OPENAI_API_KEY=...   # only if running --model gpt-4o-mini or --include-openai
+ANTHROPIC_API_KEY=.. # only if scoring with --judge claude
 ```
 
 ## Step-by-step usage
@@ -62,7 +69,8 @@ Outputs:
 
 ### 2. Run the generation sweep
 
-Sweeps all combinations of **4 models × 3 representations × 3 prompts** (36 cells) over the dev set.
+By default, sweeps all Hugging Face model combinations:
+**3 models × 3 representations × 3 prompts** (27 cells) over the dev set.
 
 ```bash
 python -m evals.run_sweep
@@ -73,11 +81,29 @@ Options:
 | Flag | Description |
 |------|-------------|
 | `--model` | Run a single model: `gpt-4o-mini`, `llama`, `mistral`, `qwen` |
+| `--model-id` | Override the underlying model id for one selected `--model`, useful for smaller local models |
+| `--backend` | `router` for hosted Hugging Face Router calls, or `local` to load model weights with `transformers`. Default: `router` |
+| `--include-openai` | Include `gpt-4o-mini` in the default sweep; requires `OPENAI_API_KEY` |
 | `--repr` | Run a single representation: `A`, `B`, `C` |
 | `--prompt` | Run a single prompt template: `P1`, `P2`, `P3` |
 | `--limit N` | Cap the number of dev examples |
 | `--no-resume` | Re-generate even if output file exists |
 | `--ablate` | Run the page-context ablation study |
+| `--torch-dtype` | Local inference dtype: `auto`, `bf16`, `fp16`, or `fp32` |
+| `--device-map` | Local inference device map passed to `transformers`. Default: `auto` |
+| `--cache-dir` | Optional local Hugging Face cache directory for model weights |
+
+Local generation example:
+
+```bash
+python -m evals.run_sweep --backend local --model qwen --repr B --prompt P3 --limit 5
+```
+
+Smaller local model example:
+
+```bash
+python -m evals.run_sweep --backend local --model qwen --model-id Qwen/Qwen2.5-0.5B-Instruct --repr B --prompt P3 --limit 5 --cache-dir .hf-cache
+```
 
 Outputs are saved to `results/generations/<model>_<repr>_<prompt>.json`.
 
@@ -99,10 +125,35 @@ Outputs are saved to `results/generations/<model>_<repr>_<prompt>.json`.
 
 ### 3. Score generations
 
-Scores every file in `results/generations/` using the programmatic L1 scorer and the Claude Sonnet judge.
+Scores every file in `results/generations/` using the programmatic L1 scorer and, by default, a Hugging Face-routed L2/L3 judge.
 
 ```bash
 python -m evals.score_sweep
+```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--judge hf` | Use a Hugging Face Router judge. This is the default and requires `HF_TOKEN`. |
+| `--judge local` | Load the judge model locally with `transformers`; no API key required after weights are available. |
+| `--judge-model MODEL_ID` | Override the judge model. Default: `Qwen/Qwen2.5-7B-Instruct`. |
+| `--judge claude` | Use the Claude Sonnet judge; requires `ANTHROPIC_API_KEY`. |
+| `--torch-dtype` | Local judge dtype: `auto`, `bf16`, `fp16`, or `fp32` |
+| `--device-map` | Local judge device map passed to `transformers`. Default: `auto` |
+| `--cache-dir` | Optional local Hugging Face cache directory for model weights |
+| `--no-resume` | Re-score files even if score output already exists. |
+
+Local scoring example:
+
+```bash
+python -m evals.score_sweep --judge local --judge-model Qwen/Qwen2.5-7B-Instruct
+```
+
+Smaller local judge example:
+
+```bash
+python -m evals.score_sweep --judge local --judge-model Qwen/Qwen2.5-0.5B-Instruct --cache-dir .hf-cache
 ```
 
 Outputs are saved to `results/scores/<model>_<repr>_<prompt>.json`.
