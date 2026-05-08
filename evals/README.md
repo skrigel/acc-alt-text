@@ -38,6 +38,12 @@ All commands are run from the **repo root**.
 pip install -r requirements.txt
 ```
 
+For local GPU evals only, use the slimmer dependency file instead:
+
+```bash
+pip install -r requirements-eval-local.txt
+```
+
 Required environment variables for hosted Hugging Face Router runs:
 
 ```
