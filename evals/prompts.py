@@ -182,10 +182,13 @@ _PROMPT_FNS = {
 }
 
 
-def build_prompt(example: dict, repr_text: str, prompt_key: str, repr_key: str) -> str:
+def build_prompt(example: dict, repr_text: str, prompt_key: str, repr_key: str, custom_instructions: str = None) -> str:
     fn = _PROMPT_FNS[(prompt_key, repr_key)]
     l1 = build_l1_sentence(example) if repr_key == "C" else ""
-    return fn(repr_text, l1)
+    prompt = fn(repr_text, l1)
+    if custom_instructions:
+        prompt = f"{prompt}\n\n{custom_instructions}"
+    return prompt
 
 
 import re
