@@ -1,5 +1,5 @@
 """
-P1 / P2 / P3 prompt templates for the zero-shot sweep.
+P1 / P2 / P3 prompt templates for the generation sweep.
 
 Each template takes a `repr_text` (string) and, for repr C, also a
 `l1_sentence` (the deterministically generated L1 line).
@@ -8,7 +8,7 @@ All prompts ask for a SHORT / LONG split so the same parse_output() works
 across all cells.
 """
 
-from evals.representations import build_l1_sentence
+from evals.representations import build_l1_sentence, build_repr
 
 # ── worked examples (shared across P2/P3) ─────────────────────────────────────
 
@@ -182,16 +182,49 @@ _PROMPT_FNS = {
 }
 
 
+def _few_shot_example_block(example: dict, repr_key: str, index: int) -> str:
+    repr_text = build_repr(example, repr_key)
+    short = build_l1_sentence(example) if repr_key == "C" else str(example["caption_L1"]).strip()
+    long = str(example["caption_L2L3"]).strip()
+    return f"""\
+Example {index}
+Chart input:
+{repr_text}
+
+Expected response:
+SHORT: {short}
+LONG: {long}"""
+
+
+def build_few_shot_prefix(shot_examples: list[dict], repr_key: str) -> str:
+    examples = "\n\n".join(
+        _few_shot_example_block(example, repr_key, i + 1)
+        for i, example in enumerate(shot_examples)
+    )
+    return f"""\
+Use the completed examples below as demonstrations of the expected level of \
+detail, grounding, and response format.
+
+{examples}"""
+
+
 def build_prompt(
     example: dict,
     repr_text: str,
     prompt_key: str,
     repr_key: str,
     custom_instructions: str = "",
+    shot_examples: list[dict] | None = None,
 ) -> str:
     fn = _PROMPT_FNS[(prompt_key, repr_key)]
     l1 = build_l1_sentence(example) if repr_key == "C" else ""
     prompt = fn(repr_text, l1)
+    if shot_examples:
+        prompt = (
+            f"{build_few_shot_prefix(shot_examples, repr_key)}\n\n"
+            f"Now complete the target chart.\n\n"
+            f"{prompt}"
+        )
     if custom_instructions:
         prompt = f"{prompt}\n\n{custom_instructions}"
     return prompt
@@ -202,8 +235,21 @@ import re
 
 def parse_output(text: str) -> tuple[str, str]:
     """Split model output into (short, long). Returns ('', '') on parse failure."""
+    marker_re = re.compile(
+        r'(?im)^\s*\**\s*(SHORT|LONG)(?:\s+ALT[- ]TEXT)?\s*\**\s*:\s*\**\s*'
+    )
+    matches = list(marker_re.finditer(text))
+    if matches:
+        sections = {}
+        for i, match in enumerate(matches):
+            key = match.group(1).upper()
+            start = match.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            sections[key] = text[start:end].strip()
+        return sections.get("SHORT", ""), sections.get("LONG", "")
+
     short_m = re.search(r'SHORT:\s*(.*?)(?=\nLONG:|$)', text, re.DOTALL | re.IGNORECASE)
-    long_m  = re.search(r'LONG:\s*(.*?)$',             text, re.DOTALL | re.IGNORECASE)
+    long_m = re.search(r'LONG:\s*(.*?)$', text, re.DOTALL | re.IGNORECASE)
     short = short_m.group(1).strip() if short_m else ""
-    long  = long_m.group(1).strip()  if long_m  else ""
+    long = long_m.group(1).strip() if long_m else ""
     return short, long

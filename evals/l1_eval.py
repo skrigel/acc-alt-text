@@ -62,6 +62,30 @@ def extract_numbers(text):
     return [float(x) for x in re.findall(r"\d+(?:\.\d+)?", normalize(text))]
 
 
+def _categorical_endpoint_score(gt_range: str, gen_caption: str) -> float:
+    gt_norm = normalize(gt_range)
+    gen_norm = normalize(gen_caption)
+
+    patterns = [
+        r"categorical scale with (.*?) on one end and (.*?) at the other",
+        r"categorical scale starting with (.*?) and ending with (.*)",
+        r"categorical scale starting at (.*?) and ending at (.*)",
+        r"categorical scale from (.*?) to (.*)",
+    ]
+    endpoints = []
+    for pattern in patterns:
+        match = re.search(pattern, gt_norm)
+        if match:
+            endpoints = [part.strip() for part in match.groups() if part.strip()]
+            break
+
+    if endpoints:
+        matched = sum(1 for endpoint in endpoints if endpoint in gen_norm)
+        return matched / len(endpoints)
+
+    return 1 if "categorical" in gen_norm else 0
+
+
 def score_chart_type(gt_l1_properties, gen_caption):
     gt_type_norm = normalize(gt_l1_properties["chart_type"])
     gen_caption_norm = normalize(gen_caption)
@@ -102,6 +126,9 @@ def axis_range_helper(gt_range, gen_caption):
     score = 0
     gt_numbers = extract_numbers(gt_range)
     gen_numbers = extract_numbers(gen_caption)
+
+    if "categorical" in gt_range.lower() and len(gt_numbers) != 2:
+        return _categorical_endpoint_score(gt_range, gen_caption)
 
     if len(gt_numbers) != 2:
         print(f"Unexpected number of numbers in gt_range: {gt_range}")

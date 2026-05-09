@@ -95,6 +95,8 @@ Options:
 | `--limit N` | Cap the number of dev examples |
 | `--no-resume` | Re-generate even if output file exists |
 | `--ablate` | Run the page-context ablation study |
+| `--shots {0,1,2,3}` | Prepend N non-dev examples as few-shot demonstrations. Default: `0` |
+| `--shot-sweep` | Run 1-shot, 2-shot, and 3-shot variants |
 | `--torch-dtype` | Local inference dtype: `auto`, `bf16`, `fp16`, or `fp32` |
 | `--device-map` | Local inference device map passed to `transformers`. Default: `auto` |
 | `--cache-dir` | Optional local Hugging Face cache directory for model weights |
@@ -105,6 +107,18 @@ Local generation example:
 python -m evals.run_sweep --backend local --model qwen --repr B --prompt P3 --limit 5
 ```
 
+Qwen 1/2/3-shot prompt sweep:
+
+```bash
+python -m evals.run_sweep --model qwen --shot-sweep
+```
+
+Focused local Qwen few-shot test:
+
+```bash
+python -m evals.run_sweep --backend local --model qwen --repr B --prompt P3 --shot-sweep --limit 5
+```
+
 Smaller local model example:
 
 ```bash
@@ -112,6 +126,9 @@ python -m evals.run_sweep --backend local --model qwen --model-id Qwen/Qwen2.5-0
 ```
 
 Outputs are saved to `results/generations/<model>_<repr>_<prompt>.json`.
+Few-shot runs add a suffix, for example `qwen_B_P3_shots2.json`.
+Demonstrations are selected deterministically from `data_train.json` when present,
+or from validation examples outside `data/eval/dev_ids.json` in lightweight checkouts.
 
 **Representations:**
 

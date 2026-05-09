@@ -25,8 +25,13 @@ def _config_from_path(score_file: Path) -> str:
     name = score_file.stem
     if name.startswith("ablation_"):
         name = name.removeprefix("ablation_")
-    model, repr_key, prompt = name.rsplit("_", 2)
-    return f"{model}-{repr_key}-{prompt}"
+    parts = name.split("_")
+    shot_suffix = ""
+    if parts[-1].startswith("shots"):
+        shot_suffix = f"-{parts.pop()}"
+    model = "_".join(parts[:-2])
+    repr_key, prompt = parts[-2:]
+    return f"{model}-{repr_key}-{prompt}{shot_suffix}"
 
 
 def aggregate():

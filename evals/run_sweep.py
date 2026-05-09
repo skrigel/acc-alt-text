@@ -1,5 +1,5 @@
 """
-Generation harness for the 36-cell zero-shot sweep.
+Generation harness for the model / representation / prompt sweep.
 Updated: 
 - Short: Strictly L1 (Elemental) content.
 - Long: L1 + L2 + L3 (Structural + Statistical + Perceptual) content.
@@ -10,13 +10,14 @@ import json
 import os
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from evals.representations import build_repr
+from evals.representations import build_l1_sentence, build_repr
 from evals.prompts import build_prompt, parse_output
 
 # ── model configs ─────────────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ DEFAULT_MODEL_KEYS = [
 GEN_DIR = Path("results/generations")
 DATA_DIR = Path("data/vistext_train_test")
 DEV_IDS_FILE = Path("data/eval/dev_ids.json")
+SHOT_COUNTS = [1, 2, 3]
 
 
 # ── LLM clients ───────────────────────────────────────────────────────────────
@@ -110,6 +112,60 @@ def _load_dev_examples(limit: int | None = None) -> list[dict]:
     return dev
 
 
+@lru_cache(maxsize=None)
+def _load_shot_candidate_examples() -> list[dict]:
+    train_file = DATA_DIR / "data_train.json"
+    if train_file.exists():
+        return json.loads(train_file.read_text())
+
+    dev_ids = set(json.loads(DEV_IDS_FILE.read_text()))
+    candidate_examples = [
+        example
+        for example in json.loads((DATA_DIR / "data_validation.json").read_text())
+        if example["img_id"] not in dev_ids
+    ]
+    print(
+        f"  data_train.json not found; using {len(candidate_examples)} non-dev validation examples for few-shot demos.",
+        flush=True,
+    )
+    return candidate_examples
+
+
+@lru_cache(maxsize=None)
+def _load_shot_examples(count: int) -> list[dict]:
+    """Select deterministic few-shot demonstrations outside the dev set."""
+    if count <= 0:
+        return []
+
+    candidate_examples = _load_shot_candidate_examples()
+
+    preferred_types = ["bar", "line", "area"]
+    selected = []
+    used_ids = set()
+
+    for chart_type in preferred_types:
+        if len(selected) >= count:
+            break
+        for example in candidate_examples:
+            if example["img_id"] in used_ids:
+                continue
+            if example["L1_properties"][0] == chart_type:
+                selected.append(example)
+                used_ids.add(example["img_id"])
+                break
+
+    for example in candidate_examples:
+        if len(selected) >= count:
+            break
+        if example["img_id"] not in used_ids:
+            selected.append(example)
+            used_ids.add(example["img_id"])
+
+    if len(selected) < count:
+        raise ValueError(f"Requested {count} shot examples, but only found {len(selected)}.")
+    return selected
+
+
 # ── single-cell run ───────────────────────────────────────────────────────────
 
 def run_cell(
@@ -124,13 +180,16 @@ def run_cell(
     device_map: str = "auto",
     model_id_override: str | None = None,
     cache_dir: str | None = None,
+    shot_examples: list[dict] | None = None,
 ) -> Path:
     cfg = MODELS[model_key]
     if backend == "local" and cfg["provider"] == "openai":
         raise ValueError("Local backend can only run Hugging Face model ids, not gpt-4o-mini.")
     model_id = model_id_override or cfg["model_id"]
 
-    out_file = out_dir / f"{model_key}_{repr_key}_{prompt_key}.json"
+    shot_count = len(shot_examples or [])
+    shot_suffix = f"_shots{shot_count}" if shot_count else ""
+    out_file = out_dir / f"{model_key}_{repr_key}_{prompt_key}{shot_suffix}.json"
 
     done: dict[int, dict] = {}
     if resume and out_file.exists():
@@ -139,7 +198,7 @@ def run_cell(
 
     remaining = [e for e in examples if e["img_id"] not in done]
     if not remaining:
-        print(f"  [{model_key}|{repr_key}|{prompt_key}] already complete ({len(done)} examples)")
+        print(f"  [{model_key}|{repr_key}|{prompt_key}|shots={shot_count}] already complete ({len(done)} examples)")
         return out_file
 
     if backend == "local":
@@ -148,7 +207,7 @@ def run_cell(
         client = _make_openai_client() if cfg["provider"] == "openai" else _make_hf_client()
     results = list(done.values())
 
-    print(f"  [{model_key}|{repr_key}|{prompt_key}|{backend}] {len(remaining)} to generate ...", flush=True)
+    print(f"  [{model_key}|{repr_key}|{prompt_key}|{backend}|shots={shot_count}] {len(remaining)} to generate ...", flush=True)
 
     # Content constraints based on rubric
     constraints = (
@@ -162,7 +221,14 @@ def run_cell(
         try:
             repr_text = build_repr(ex, repr_key)
             # Pass requirements to the prompt builder
-            prompt = build_prompt(ex, repr_text, prompt_key, repr_key, custom_instructions=constraints)
+            prompt = build_prompt(
+                ex,
+                repr_text,
+                prompt_key,
+                repr_key,
+                custom_instructions=constraints,
+                shot_examples=shot_examples,
+            )
             
             if backend == "local":
                 raw = client.generate_chat(
@@ -173,6 +239,8 @@ def run_cell(
             else:
                 raw = _call_model(client, model_id, prompt)
             short, long = parse_output(raw)
+            if repr_key == "C":
+                short = build_l1_sentence(ex)
             
             results.append({
                 "img_id": img_id,
@@ -181,6 +249,7 @@ def run_cell(
                 "long": long,
                 "raw_output": raw,
                 "error": None,
+                "shot_count": shot_count,
             })
         except Exception as e:
             print(f"    ERROR img_id={img_id}: {e}", flush=True)
@@ -191,6 +260,7 @@ def run_cell(
                 "long": "",
                 "raw_output": "",
                 "error": str(e),
+                "shot_count": shot_count,
             })
 
         if (i + 1) % 10 == 0:
@@ -201,7 +271,7 @@ def run_cell(
             time.sleep(1.0)
 
     out_file.write_text(json.dumps(results, indent=2))
-    print(f"  [{model_key}|{repr_key}|{prompt_key}] done → {out_file}")
+    print(f"  [{model_key}|{repr_key}|{prompt_key}|shots={shot_count}] done → {out_file}")
     return out_file
 
 
@@ -263,6 +333,8 @@ def run_ablation(
         else:
             raw = _call_model(client, model_id_override or MODELS[model_key]["model_id"], full_prompt)
         short, long = parse_output(raw)
+        if repr_key == "C":
+            short = build_l1_sentence(ex)
         results.append({
             "img_id": img_id, 
             "chart_type": ex["L1_properties"][0],
@@ -278,7 +350,7 @@ def run_ablation(
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the zero-shot generation sweep.")
+    parser = argparse.ArgumentParser(description="Run the generation sweep.")
     parser.add_argument("--model",  choices=list(MODELS.keys()), default=None)
     parser.add_argument("--model-id", default=None, help="Override the model id for a single selected --model.")
     parser.add_argument("--repr",   choices=REPR_KEYS,   default=None)
@@ -296,6 +368,18 @@ def main():
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--cache-dir", default=None, help="Optional local Hugging Face cache directory.")
     parser.add_argument(
+        "--shots",
+        type=int,
+        choices=[0, 1, 2, 3],
+        default=0,
+        help="Number of non-dev examples to prepend as few-shot demonstrations.",
+    )
+    parser.add_argument(
+        "--shot-sweep",
+        action="store_true",
+        help="Run 1-shot, 2-shot, and 3-shot variants. Intended for --model qwen.",
+    )
+    parser.add_argument(
         "--include-openai",
         action="store_true",
         help="Include gpt-4o-mini in the default sweep. Requires OPENAI_API_KEY.",
@@ -303,6 +387,8 @@ def main():
     args = parser.parse_args()
     if args.model_id and not args.model:
         parser.error("--model-id requires selecting one alias with --model.")
+    if args.shot_sweep and args.shots:
+        parser.error("--shot-sweep cannot be combined with --shots.")
 
     GEN_DIR.mkdir(parents=True, exist_ok=True)
     examples = _load_dev_examples(limit=args.limit)
@@ -326,30 +412,36 @@ def main():
 
     if args.model:
         models = [args.model]
+    elif args.shot_sweep:
+        models = ["qwen"]
     elif args.include_openai:
         models = list(MODELS.keys())
     else:
         models = DEFAULT_MODEL_KEYS
     reprs   = [args.repr]   if args.repr   else REPR_KEYS
     prompts = [args.prompt] if args.prompt else PROMPT_KEYS
+    shot_counts = SHOT_COUNTS if args.shot_sweep else [args.shots]
 
-    total = len(models) * len(reprs) * len(prompts)
+    total = len(models) * len(reprs) * len(prompts) * len(shot_counts)
     done  = 0
     for model_key in models:
         for repr_key in reprs:
             for prompt_key in prompts:
-                done += 1
-                print(f"\n[{done}/{total}] {model_key} × {repr_key} × {prompt_key}")
-                run_cell(
-                    model_key, repr_key, prompt_key,
-                    examples, GEN_DIR,
-                    resume=not args.no_resume,
-                    backend=args.backend,
-                    torch_dtype=args.torch_dtype,
-                    device_map=args.device_map,
-                    model_id_override=args.model_id,
-                    cache_dir=args.cache_dir,
-                )
+                for shot_count in shot_counts:
+                    done += 1
+                    shot_examples = _load_shot_examples(shot_count)
+                    print(f"\n[{done}/{total}] {model_key} × {repr_key} × {prompt_key} × shots={shot_count}")
+                    run_cell(
+                        model_key, repr_key, prompt_key,
+                        examples, GEN_DIR,
+                        resume=not args.no_resume,
+                        backend=args.backend,
+                        torch_dtype=args.torch_dtype,
+                        device_map=args.device_map,
+                        model_id_override=args.model_id,
+                        cache_dir=args.cache_dir,
+                        shot_examples=shot_examples,
+                    )
 
     print("\nSweep complete.")
 
